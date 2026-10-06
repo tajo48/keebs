@@ -88,12 +88,14 @@ impl Screen {
                 win_y = bounds.y + (bounds.h - h).max(0);
             }
 
+            // Exactly the Python flags: BORDERLESS | HIDDEN | TRANSPARENT.
+            // No UTILITY/NOT_FOCUSABLE — on real SDL3 those values collide
+            // with TOOLTIP/POPUP_MENU, which demand a parent window. The
+            // no-focus + always-on-top behavior comes from runtime calls
+            // (SDL_SetWindowAlwaysOnTop / activate-when-shown hint), like
+            // adusk.py's X11 WM-hints path.
             let title = CString::new("").unwrap();
-            let base_flags = sdl3::SDL_WINDOW_BORDERLESS
-                | sdl3::SDL_WINDOW_HIDDEN
-                | sdl3::SDL_WINDOW_UTILITY
-                | sdl3::SDL_WINDOW_ALWAYS_ON_TOP
-                | sdl3::SDL_WINDOW_NOT_FOCUSABLE;
+            let base_flags = sdl3::SDL_WINDOW_BORDERLESS | sdl3::SDL_WINDOW_HIDDEN;
             let window = (s.create_window)(
                 title.as_ptr(),
                 w,
@@ -160,7 +162,11 @@ impl Screen {
 
     pub fn show(&self) {
         unsafe {
-            (sdl().show_window)(self.window);
+            let s = sdl();
+            // Raise above other windows the same way adusk.py re-asserts
+            // topmost (runtime call, not a create flag).
+            (s.set_window_always_on_top)(self.window, true);
+            (s.show_window)(self.window);
         }
     }
 

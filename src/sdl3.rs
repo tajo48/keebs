@@ -32,9 +32,12 @@ pub const SDL_INIT_EVENTS: u32 = 0x0000_4000;
 
 pub const SDL_WINDOW_HIDDEN: u64 = 0x0000_0000_0000_0008;
 pub const SDL_WINDOW_BORDERLESS: u64 = 0x0000_0000_0000_0010;
-pub const SDL_WINDOW_ALWAYS_ON_TOP: u64 = 0x0000_0000_0000_0100;
+// NOTE: these are SDL3's real flag values. The sdl3w constants
+// "ALWAYS_ON_TOP"=0x100 / "UTILITY"=0x20000 / "NOT_FOCUSABLE"=0x80000 are
+// NOT used as create-flags by the Python app (0x100 = MOUSE_GRABBED and
+// 0x80000 = POPUP_MENU in SDL3 — passing them makes SDL demand a parent
+// window). Always-on-top is applied via SDL_SetWindowAlwaysOnTop() instead.
 pub const SDL_WINDOW_UTILITY: u64 = 0x0000_0000_0002_0000;
-pub const SDL_WINDOW_NOT_FOCUSABLE: u64 = 0x0000_0000_0008_0000;
 pub const SDL_WINDOW_TRANSPARENT: u64 = 0x0000_0000_4000_0000;
 
 pub const SDL_WINDOWPOS_CENTERED: i32 = 0x2FFF_0000;
@@ -177,6 +180,7 @@ type FnBoolU32Rect = unsafe extern "C" fn(u32, *mut SDL_Rect) -> bool;
 type FnWindow = unsafe extern "C" fn(*const c_char, c_int, c_int, u64) -> SdlWindow;
 type FnVoidPtr = unsafe extern "C" fn(SdlWindow);
 type FnBoolWin2i = unsafe extern "C" fn(SdlWindow, c_int, c_int) -> bool;
+type FnBoolWinBool = unsafe extern "C" fn(SdlWindow, bool) -> bool;
 type FnRenderer = unsafe extern "C" fn(SdlWindow, *const c_char) -> SdlRenderer;
 type FnVoidRenderer = unsafe extern "C" fn(SdlRenderer);
 type FnBoolR4u8 = unsafe extern "C" fn(SdlRenderer, u8, u8, u8, u8) -> bool;
@@ -207,6 +211,7 @@ pub struct Sdl {
     pub create_window: FnWindow,
     pub destroy_window: FnVoidPtr,
     pub set_window_position: FnBoolWin2i,
+    pub set_window_always_on_top: FnBoolWinBool,
     pub show_window: FnVoidPtr,
     pub hide_window: FnVoidPtr,
     pub create_renderer: FnRenderer,
@@ -260,6 +265,7 @@ impl Sdl {
                 create_window: bind(&core, b"SDL_CreateWindow\0"),
                 destroy_window: bind(&core, b"SDL_DestroyWindow\0"),
                 set_window_position: bind(&core, b"SDL_SetWindowPosition\0"),
+                set_window_always_on_top: bind(&core, b"SDL_SetWindowAlwaysOnTop\0"),
                 show_window: bind(&core, b"SDL_ShowWindow\0"),
                 hide_window: bind(&core, b"SDL_HideWindow\0"),
                 create_renderer: bind(&core, b"SDL_CreateRenderer\0"),

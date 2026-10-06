@@ -1,55 +1,58 @@
 # keebs
 
-Rust port of the SteamlessKeyboard **Linux input core** (phase 1 of the
-rewrite of `linux/` in Rust).
+Rust port of the SteamlessKeyboard **Linux app**.
 
-## Modules
+## Running
 
-| module | ports | what it does |
-|--------|-------|--------------|
-| `sc` | `steamcontroller/__init__.py` (protocol) + `deck.py` (parsing) | SCButtons bit flags, `SciInput`, Triton/Deck/battery parsers, lizard / turn-off / haptic / rumble report builders |
-| `triton` | `steamcontroller/__init__.py` (`SteamController`) | Driver for the Triton dongle (0x1304) + wired 2026 controller (0x1302): interface probing, read loop, battery freshness, haptics, chime, self-expiring rumble + keepalive |
-| `deck` | `steamcontroller/deck.py` (`DeckController`) | USB-tethered Steam Deck (0x1205): streaming-interface probe, stick auto-centering, lizard refresh watchdog, best-effort haptics |
-| `events` | `steamcontroller/events.py` | Button-edge → key mapping |
-| `uinput` | `steamcontroller/uinput.py` | Direct `/dev/uinput` key/mouse injection (Wayland-safe); same `KEY_*` name map incl. the `KEY_LEFTWIN`/`KEY_QUESTION` aliases |
-| `stop` | `threading.Event` usage | Co-operative stop flag shared between drivers and the app |
-
-## Not ported yet (remaining phases)
-
-- **On-screen keyboard GUI** — `adusk/screen.py` (SDL renderer, skins,
-  glyphs, open animation), `vkb.py` (key layout + cursor stepping),
-  `skins.py`, and the X11 no-focus/click-through window tricks in
-  `adusk.py`
-- **Controller logic / chords** — `adusk/controller.py` (trackpad cursor,
-  Steam chords, gamepad↔PC switching), `inputsrc.py`
-- **Tray icon** — `tray.py` / `tray_linux.py`
-- **Gamepad mode** — virtual Xbox pad (Windows uses ViGEmBus; a Linux
-  equivalent would use a uinput Xbox 360 pad or the HID gamepad approach)
-- **Windows tree** — `windows/` (ViGEm client, HidHide, lock-screen OSK)
-
-## Building / running
+From inside the nix flake (LD_LIBRARY_PATH for SDL3 comes from the wrapper):
 
 ```sh
-cd keebs; cargo run --release -- --inject
+nix run .#keebs
 ```
 
-`--inject` creates the virtual keyboard/mouse and maps **LGRIP1 (L4
-paddle) → Left Shift** (parity with adusk's default). Without it, the
-binary just prints button edges and battery status.
-
-Requires write access to `/dev/uinput` for injection (uaccess ACL on most
-distros) and read access to the controller's hidraw nodes.
-
-### Dependencies
+Or hack on it in the keebs dev shell:
 
 ```sh
-cargo add hidapi@2.6 --no-default-features --features linux-static-hidraw
-cargo add ctrlc@3 libc@0.2
+nix develop .#keebs -c cargo run --release
 ```
 
-The hidraw hidapi backend is deliberate: the libusb backend duplicates the
-report-ID byte in `SET_REPORT` payloads, which Triton firmware rejects
-(the Python driver hit the same wall and switched to hidraw).
+Opens the on-screen keyboard (Steam-dark theme, Selawik font). It listens
+for the controller in the background:
+
+| input | action |
+|-------|--------|
+| **Steam + X** | open the OSK |
+| **B** / **L4/L5 grip** / Steam released alone | close the OSK |
+| **left stick / D-pad** | move the key cursor (tap = 1 key, hold = repeat) |
+| **A** | press the key under the cursor |
+| **X** | Backspace (hold to repeat) |
+| **Y / R4 / R5** | Space |
+| **L2** | Shift (hold) |
+| **R2** | Enter (hold) |
+| **trackpad touch** | move the pointer; **pad click** / L2/R2 presses the key under it |
+| **right stick** | move the system mouse (point-and-click keys) |
+| **Steam + left stick** | volume / prev-next track |
+| **Steam + VIEW** | Alt+Tab |
+| **L3** | Caps Lock (Steam+L3: play/pause) |
+
+Mouse also works on the OSK directly: hover highlights, left-click presses,
+right-click = Shift, back/forward buttons = Backspace/Space.
+
+`--listener` runs the phase-1 passive device listener instead (prints button
+edges + battery, LGRIP1/L4 -> Left Shift).
+
+## Status
+
+**Ported:** Triton (0x1304/0x1302) + Deck (0x1205) drivers, lizard control,
+haptics/rumble/chime, battery, uinput injection, EventMapper, chord logic
+(`controller.py` core), on-screen keyboard (`vkb.py` layout/geometry/cursor
+stepping/dispatch, `screen.py` rendering — SDL3 + SDL3_ttf via a libloading
+FFI that mirrors the Python `sdl3w` shim).
+
+**Not ported yet:** skins/CSS theming + transparency + live tray skin
+switch, open animation, click-through + window position rotation,
+ stick-scroll mode, per-controller settings, gamepad mode, tray icon,
+Windows tree.
 
 ## Design notes kept from the Python original
 
