@@ -134,8 +134,8 @@ pub struct ControllerManager {
     kbd_stick_zone_prev: Zone,
     kbd_stick_repeat_at: Instant,
     open_tick_pending: bool,
-    passive_lizard_suppressed: bool,
-    last_lizard_suppress: Instant,
+    lizard_asserted_on: Option<bool>,
+    last_lizard_assert: Instant,
     shift_active: bool,
     enter_active: bool,
     mouse_l_active: bool,
@@ -190,8 +190,8 @@ impl ControllerManager {
             kbd_stick_zone_prev: Zone::Neutral,
             kbd_stick_repeat_at: Instant::now(),
             open_tick_pending: true,
-            passive_lizard_suppressed: false,
-            last_lizard_suppress: Instant::now(),
+            lizard_asserted_on: None,
+            last_lizard_assert: Instant::now(),
             shift_active: false,
             enter_active: false,
             mouse_l_active: false,
@@ -398,20 +398,19 @@ impl ControllerManager {
             state.show();
         }
 
-        // The OSK owns the controller: keep firmware lizard OFF while Steam is
-        // held (so a Steam chord isn't fought by firmware output) and force it
-        // back OFF — never ON — on release.
-        if steam_now {
-            if !self.passive_lizard_suppressed
-                || now.duration_since(self.last_lizard_suppress).as_secs_f32() > 2.0
-            {
-                dev.set_lizard(false);
-                self.passive_lizard_suppressed = true;
-                self.last_lizard_suppress = now;
-            }
-        } else if self.passive_lizard_suppressed {
-            dev.set_lizard(false);
-            self.passive_lizard_suppressed = false;
+        // Lizard policy (the "cursor goes back when the keyboard closes"
+        // behavior): the OSK owns the controller while visible -> firmware
+        // kb/mouse OFF; OSK hidden -> desktop mode, pads drive the system
+        // mouse (ON); Steam held -> OFF regardless so chords don't fight
+        // firmware output. Re-asserted on change or every ~2 s (the
+        // firmware's own timer re-enables on its own schedule).
+        let desired_lizard_on = !state.is_visible() && !steam_now;
+        if self.lizard_asserted_on != Some(desired_lizard_on)
+            || now.duration_since(self.last_lizard_assert).as_secs_f32() > 2.0
+        {
+            dev.set_lizard(desired_lizard_on);
+            self.lizard_asserted_on = Some(desired_lizard_on);
+            self.last_lizard_assert = now;
         }
 
         // X -> Backspace with hold-to-repeat, gated off during Steam holds.

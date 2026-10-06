@@ -135,7 +135,7 @@ impl DeckController {
     fn write_report(&self, report: &[u8; 65]) -> bool {
         let guard = self.session.lock().unwrap();
         match guard.as_ref() {
-            Some(s) => s.write(report),
+            Some(s) => s.send_output(report),
             None => false,
         }
     }
