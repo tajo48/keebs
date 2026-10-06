@@ -39,7 +39,10 @@ pub const SDL_WINDOW_BORDERLESS: u64 = 0x0000_0000_0000_0010;
 // "ALWAYS_ON_TOP"=0x100 / "UTILITY"=0x20000 / "NOT_FOCUSABLE"=0x80000 are
 // NOT used as create-flags by the Python app (0x100 = MOUSE_GRABBED and
 // 0x80000 = POPUP_MENU in SDL3 — passing them makes SDL demand a parent
-// window). Always-on-top is applied via SDL_SetWindowAlwaysOnTop() instead.
+// window). SDL3's true SDL_WINDOW_ALWAYS_ON_TOP is 0x10000, safe to pass at
+// create time; SDL_SetWindowAlwaysOnTop() is still used at runtime to
+// re-assert it when a WM drops topmost.
+pub const SDL_WINDOW_ALWAYS_ON_TOP: u64 = 0x0000_0000_0001_0000;
 pub const SDL_WINDOW_UTILITY: u64 = 0x0000_0000_0002_0000;
 pub const SDL_WINDOW_TRANSPARENT: u64 = 0x0000_0000_4000_0000;
 

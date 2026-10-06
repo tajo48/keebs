@@ -130,14 +130,17 @@ impl Screen {
                 win_y = bounds.y + (bounds.h - h).max(0);
             }
 
-            // Exactly the Python flags: BORDERLESS | HIDDEN | TRANSPARENT.
-            // No UTILITY/NOT_FOCUSABLE — on real SDL3 those values collide
-            // with TOOLTIP/POPUP_MENU, which demand a parent window. The
-            // no-focus + always-on-top behavior comes from runtime calls
-            // (SDL_SetWindowAlwaysOnTop / activate-when-shown hint), like
-            // adusk.py's X11 WM-hints path.
+            // Exactly the Python flags: BORDERLESS | HIDDEN | TRANSPARENT,
+            // plus SDL3's real SDL_WINDOW_ALWAYS_ON_TOP (0x10000 — the sdl3w
+            // value 0x100 is MOUSE_GRABBED and must never be passed). No
+            // UTILITY/NOT_FOCUSABLE — on real SDL3 those values collide with
+            // TOOLTIP/POPUP_MENU, which demand a parent window. The no-focus
+            // behavior comes from runtime calls (activate-when-shown hint,
+            // X11 WM hints), like adusk.py.
             let title = CString::new("").unwrap();
-            let base_flags = sdl3::SDL_WINDOW_BORDERLESS | sdl3::SDL_WINDOW_HIDDEN;
+            let base_flags = sdl3::SDL_WINDOW_BORDERLESS
+                | sdl3::SDL_WINDOW_HIDDEN
+                | sdl3::SDL_WINDOW_ALWAYS_ON_TOP;
             let window = (s.create_window)(
                 title.as_ptr(),
                 w,
@@ -221,8 +224,8 @@ impl Screen {
     pub fn show(&self) {
         unsafe {
             let s = sdl();
-            // Raise above other windows the same way adusk.py re-asserts
-            // topmost (runtime call, not a create flag).
+            // Created with SDL_WINDOW_ALWAYS_ON_TOP, but re-assert it at map
+            // time anyway — same as adusk.py re-asserting topmost on show.
             (s.set_window_always_on_top)(self.window, true);
             (s.show_window)(self.window);
         }

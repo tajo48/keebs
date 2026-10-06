@@ -3,6 +3,7 @@
 //! shift/caps latch, highlights, queues, visibility, pad pointers.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -79,6 +80,7 @@ pub struct OskState {
     dpad_queue: Mutex<Vec<(Dir, bool)>>,
     click_queue: Mutex<Vec<ClickEvent>>,
     pointers: Mutex<[Pointer; 2]>,
+    haptic_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl OskState {
@@ -102,6 +104,7 @@ impl OskState {
             dpad_queue: Mutex::new(Vec::new()),
             click_queue: Mutex::new(Vec::new()),
             pointers: Mutex::new([Pointer::INACTIVE, Pointer::INACTIVE]),
+            haptic_hook: Mutex::new(None),
         }
     }
 
@@ -218,6 +221,21 @@ impl OskState {
 
     pub fn drain_click_queue(&self) -> Vec<ClickEvent> {
         std::mem::take(&mut *self.click_queue.lock().unwrap())
+    }
+
+    // -- haptics ------------------------------------------------------------
+
+    /// The Python `state.set_haptic_tick` equivalent: the input thread
+    /// installs a closure that buzzes the live controller; the render loop
+    /// fires it per dispatched key press.
+    pub fn set_haptic_tick(&self, f: Arc<dyn Fn() + Send + Sync>) {
+        *self.haptic_hook.lock().unwrap() = Some(f);
+    }
+
+    pub fn haptic_tick(&self) {
+        if let Some(f) = self.haptic_hook.lock().unwrap().as_ref() {
+            f();
+        }
     }
 
     // -- pointers -----------------------------------------------------------

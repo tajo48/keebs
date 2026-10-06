@@ -17,11 +17,6 @@ use crate::triton::SteamController;
 use crate::uinput::{Keyboard, Mouse, keys as K};
 use crate::vkb;
 
-fn note_rumble_ok() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| println!("deck: 0x8F haptic report accepted"));
-}
-
 // Stick thresholds / cadences (controller.py class constants).
 const STICK_DEADZONE: f32 = 14000.0;
 const STICK_HOLD_DELAY: f32 = 0.5;
@@ -41,6 +36,7 @@ const MOUSE_MIN: f32 = 0.05;
 const TRIGGER_THRESHOLD: i32 = 16384;
 
 /// Which physical device is feeding frames — for haptics + lizard control.
+#[derive(Clone)]
 pub enum Device {
     Triton(Arc<SteamController>),
     Deck(Arc<DeckController>),
@@ -55,36 +51,33 @@ impl Device {
     }
 
     /// Light UI tick (both pads, short burst).
-    fn haptic_tick(&self) {
+    pub fn haptic_tick(&self) {
         match self {
             Device::Triton(sc) => {
                 sc.haptic_click(550, -6, 5, 18);
             }
-            // Deck: try the classic 0x8F haptic report first (the kernel
-            // hid-steam driver's format), fall back to SDL gamepad rumble
-            // (a no-op on this setup — SDL sees no gamepads for the Deck).
+            // Deck: fire BOTH the classic 0x8F dual-vibration report AND the
+            // Python driver's 0x83 trackpad tones. The firmware ACKs the 0x8F
+            // without buzzing (accepted ≠ felt), so the 0x83 channels — the
+            // only haptics the Python deck driver ever sent — must not be
+            // short-circuited by it. Duplicates are benign (same tick twice
+            // at worst).
             Device::Deck(d) => {
-                if d.rumble(0xFFFF, 0xFFFF) {
-                    note_rumble_ok();
-                } else {
-                    crate::gamepad::haptic_tick();
-                }
+                d.rumble(0xFFFF, 0xFFFF);
+                d.haptic_click(550, -6, 5);
             }
         }
     }
 
     /// Stronger pad-click tick.
-    fn pad_click_haptic(&self) {
+    pub fn pad_click_haptic(&self) {
         match self {
             Device::Triton(sc) => {
                 sc.haptic_pad_click();
             }
             Device::Deck(d) => {
-                if d.rumble(0xFFFF, 0xFFFF) {
-                    note_rumble_ok();
-                } else {
-                    crate::gamepad::pad_click();
-                }
+                d.rumble(0xFFFF, 0xFFFF);
+                d.haptic_pad_click();
             }
         }
     }
@@ -718,6 +711,12 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
 
         if let Some(device) = device {
             absence_noted = false;
+            // Publish the haptic hooks so the main thread can buzz on each
+            // dispatched key (the Python state.set_haptic_tick equivalent).
+            {
+                let dev = device.clone();
+                state.set_haptic_tick(Arc::new(move || dev.haptic_tick()));
+            }
             match &device {
                 Device::Deck(d) => {
                     let st = Arc::clone(&state);

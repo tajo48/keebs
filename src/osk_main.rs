@@ -169,10 +169,14 @@ pub fn run(stop: Arc<StopFlag>) {
                 screen.assert_topmost();
                 next_topmost = Instant::now() + Duration::from_millis(500);
             }
-            // DPAD / left-stick cursor steps.
+            // DPAD / left-stick cursor steps (stick moves buzz on switch).
             let dpad_steps = state.drain_dpad_queue();
-            for (dir, _haptic) in &dpad_steps {
-                vkb.step_cursor(&state, *dir, *_haptic);
+            for (dir, haptic) in &dpad_steps {
+                let before = state.get_cursor();
+                vkb.step_cursor(&state, *dir, *haptic);
+                if *haptic && state.get_cursor() != before {
+                    state.haptic_tick();
+                }
             }
             activity |= !dpad_steps.is_empty();
 
@@ -191,6 +195,7 @@ pub fn run(stop: Arc<StopFlag>) {
                         state: &state,
                     }
                     .dispatch(kd);
+                    state.haptic_tick();
                 }
             }
 
@@ -222,6 +227,7 @@ pub fn run(stop: Arc<StopFlag>) {
                         state: &state,
                     }
                     .dispatch(kd);
+                    state.haptic_tick();
                 }
             }
 
