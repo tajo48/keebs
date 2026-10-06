@@ -1,6 +1,12 @@
 pub mod deck;
 pub mod events;
+pub mod manager;
+pub mod osk_main;
+pub mod osk_state;
+pub mod render;
 pub mod sc;
+pub mod sdl3;
 pub mod stop;
 pub mod triton;
 pub mod uinput;
+pub mod vkb;

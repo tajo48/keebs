@@ -7,3 +7,4 @@ edition = "2024"
 ctrlc = "3"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
 libc = "0.2"
+libloading = "0.8"

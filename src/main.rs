@@ -1,11 +1,11 @@
-//! keebs — Rust port of the SteamlessKeyboard Linux input core.
+//! keebs — Rust port of the SteamlessKeyboard Linux app.
 //!
-//! Phase 1 binary: a passive controller listener (the chord-watcher role).
-//! Detects whichever Valve device is present, streams its input, prints
-//! button edges and battery status, and — with `--inject` — maps buttons to
-//! keys via uinput (works under Wayland).
+//! Default: the on-screen keyboard (phase 2) — SDL3 window + controller
+//! chords (Steam+X opens, B/LGRIP closes, Steam-alone closes, L2=Shift,
+//! R2=Enter, pads/sticks navigate, right stick = mouse).
 //!
-//! Run: cargo run -- [--inject]   (Ctrl-C for a clean lizard restore)
+//! `--listener`: phase-1 passive device listener (prints button edges and
+//! battery, LGRIP1/L4 -> Left Shift via uinput).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,47 +52,29 @@ fn spawn_battery_printer(ctrl: &Arc<SteamController>) {
     });
 }
 
-fn main() {
-    let inject = std::env::args().any(|a| a == "--inject");
-    let stop = Arc::new(StopFlag::new());
-    {
-        let stop = Arc::clone(&stop);
-        if let Err(e) = ctrlc::set_handler(move || stop.signal()) {
-            eprintln!("warning: no Ctrl-C handler ({e})");
+fn listener(stop: Arc<StopFlag>) {
+    let mut mapper = match EventMapper::new() {
+        Ok(mut m) => {
+            // Parity with adusk: LGRIP1 (L4 paddle) -> Left Shift.
+            m.set_button_action(buttons::LGRIP1, "KEY_LEFTSHIFT");
+            Some(m)
         }
-    }
-
-    // passive=true = desktop/chord-watcher posture: firmware lizard stays ON,
-    // the trackpads keep driving the system mouse. The OSK layer will pass
-    // false to own the controller.
-    let passive = true;
-
-    let mut mapper = if inject {
-        match EventMapper::new() {
-            Ok(mut m) => {
-                // Parity with adusk: LGRIP1 (L4 paddle) -> Left Shift.
-                m.set_button_action(buttons::LGRIP1, "KEY_LEFTSHIFT");
-                Some(m)
-            }
-            Err(e) => {
-                eprintln!("uinput init failed ({e}); running print-only");
-                eprintln!("hint: check permissions on /dev/uinput");
-                None
-            }
+        Err(e) => {
+            eprintln!("uinput init failed ({e}); running print-only");
+            None
         }
-    } else {
-        None
     };
-
-    println!("keebs — SteamlessKeyboard input core (Rust)");
     println!(
         "injection: {}",
         if mapper.is_some() {
             "on (LGRIP1/L4 -> LeftShift)"
         } else {
-            "off (pass --inject)"
+            "off"
         }
     );
+
+    // passive=true = desktop/chord-watcher posture: firmware lizard stays ON.
+    let passive = true;
 
     while !stop.is_set() {
         if deck::deck_present() {
@@ -127,6 +109,24 @@ fn main() {
             break;
         }
     }
-
     println!("bye");
+}
+
+fn main() {
+    let listener_mode = std::env::args().any(|a| a == "--listener");
+    let stop = Arc::new(StopFlag::new());
+    {
+        let stop = Arc::clone(&stop);
+        if let Err(e) = ctrlc::set_handler(move || stop.signal()) {
+            eprintln!("warning: no Ctrl-C handler ({e})");
+        }
+    }
+
+    if listener_mode {
+        println!("keebs — listener mode (phase 1)");
+        listener(stop);
+    } else {
+        println!("keebs — on-screen keyboard (Rust port)");
+        keebs::osk_main::run(stop);
+    }
 }

@@ -299,6 +299,33 @@ pub fn keycode(name: &str) -> Option<u16> {
     KEYMAP.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
 }
 
+/// Linux keycodes used by the OSK logic (same values as `KEYMAP`).
+pub mod keys {
+    pub const KEY_ESC: u16 = 1;
+    pub const KEY_BACKSPACE: u16 = 14;
+    pub const KEY_TAB: u16 = 15;
+    pub const KEY_ENTER: u16 = 28;
+    pub const KEY_LEFTCTRL: u16 = 29;
+    pub const KEY_C: u16 = 46;
+    pub const KEY_V: u16 = 47;
+    pub const KEY_DOT: u16 = 52;
+    pub const KEY_LEFTSHIFT: u16 = 42;
+    pub const KEY_RIGHTSHIFT: u16 = 54;
+    pub const KEY_LEFTALT: u16 = 56;
+    pub const KEY_SPACE: u16 = 57;
+    pub const KEY_CAPSLOCK: u16 = 58;
+    pub const KEY_LEFTMETA: u16 = 125;
+    pub const KEY_UP: u16 = 103;
+    pub const KEY_LEFT: u16 = 105;
+    pub const KEY_RIGHT: u16 = 106;
+    pub const KEY_DOWN: u16 = 108;
+    pub const KEY_PLAYPAUSE: u16 = 164;
+    pub const KEY_VOLUMEUP: u16 = 115;
+    pub const KEY_VOLUMEDOWN: u16 = 114;
+    pub const KEY_PREVIOUSSONG: u16 = 165;
+    pub const KEY_NEXTSONG: u16 = 163;
+}
+
 // ---------------------------------------------------------------------------
 // Public API — mirrors the Python Keyboard/Mouse classes.
 // ---------------------------------------------------------------------------
@@ -360,6 +387,37 @@ impl Keyboard {
                 if *name == "KEY_CAPSLOCK" {
                     caps = true;
                 }
+            }
+            let _ = dev.syn();
+        }
+        if caps {
+            if let Some(hook) = self.caps_hook.lock().unwrap().as_ref() {
+                hook();
+            }
+        }
+    }
+
+    /// Raw-keycode variants for the OSK manager (which works in u16 Linux
+    /// keycodes instead of `KEY_*` names). Same caps_hook notification.
+    pub fn press_code(&self, code: u16) {
+        self.emit_code(code, 1);
+    }
+
+    pub fn release_code(&self, code: u16) {
+        self.emit_code(code, 0);
+    }
+
+    pub fn tap_code(&self, code: u16) {
+        self.press_code(code);
+        self.release_code(code);
+    }
+
+    fn emit_code(&self, code: u16, value: i32) {
+        let caps = code == crate::uinput::keys::KEY_CAPSLOCK && value == 1;
+        {
+            let dev = self.dev.lock().unwrap();
+            if let Err(e) = dev.emit(EV_KEY, code, value) {
+                eprintln!("uinput: key {code} failed: {e}");
             }
             let _ = dev.syn();
         }
