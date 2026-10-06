@@ -56,6 +56,7 @@ pub fn run(stop: Arc<StopFlag>) {
     let mut current_fps = ACTIVE_FPS;
     let mut last_active = Instant::now();
     let mut limiter = FrameLimiter::new(ACTIVE_FPS);
+    let mut next_topmost = Instant::now();
     // The first motion event after open just records the anchor (see adusk.py).
     let mut mouse_anchor: Option<(i32, i32)> = None;
     let mut mouse_repeat_at: Option<Instant> = None;
@@ -148,11 +149,17 @@ pub fn run(stop: Arc<StopFlag>) {
         }
 
         if cur_visible {
-            // DPAD / left-stick cursor steps.
-            for (dir, _haptic) in state.drain_dpad_queue() {
-                vkb.step_cursor(&state, dir, _haptic);
+            // Compositors drop topmost when other windows raise — re-assert.
+            if Instant::now() >= next_topmost {
+                screen.assert_topmost();
+                next_topmost = Instant::now() + Duration::from_millis(500);
             }
-            activity |= !state.drain_dpad_queue().is_empty();
+            // DPAD / left-stick cursor steps.
+            let dpad_steps = state.drain_dpad_queue();
+            for (dir, _haptic) in &dpad_steps {
+                vkb.step_cursor(&state, *dir, *_haptic);
+            }
+            activity |= !dpad_steps.is_empty();
 
             // Pad clicks -> find key -> dispatch (repeats only over
             // repeatable keys).
@@ -162,11 +169,13 @@ pub fn run(stop: Arc<StopFlag>) {
                     if click.is_repeat && !vkb.is_repeatable(r, c) {
                         continue;
                     }
+                    let kd = &vkb.keys[r][c];
+                    println!("osk: dispatch pad-click '{}' ({r},{c})", kd.label);
                     Dispatcher {
                         kb: &kb,
                         state: &state,
                     }
-                    .dispatch(&vkb.keys[r][c]);
+                    .dispatch(kd);
                 }
             }
 
@@ -191,11 +200,13 @@ pub fn run(stop: Arc<StopFlag>) {
                     if is_repeat && !vkb.is_repeatable(r, c) {
                         continue;
                     }
+                    let kd = &vkb.keys[r][c];
+                    println!("osk: dispatch key '{}' ({r},{c})", kd.label);
                     Dispatcher {
                         kb: &kb,
                         state: &state,
                     }
-                    .dispatch(&vkb.keys[r][c]);
+                    .dispatch(kd);
                 }
             }
 

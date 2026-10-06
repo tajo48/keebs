@@ -74,6 +74,7 @@ pub struct KeyDef {
     pub align: Align,
     pub valign: VAlign,
     pub font_size: Option<f32>,
+    pub glyph: Option<&'static str>,
     /// Alternate keycode sent when Shift is held (◀/▶ -> ▲/▼), WITHOUT the OS
     /// seeing a Shift modifier.
     pub shift_keycode: Option<u16>,
@@ -92,6 +93,7 @@ const fn key(label: &'static str, shifted: Option<&'static str>, keycode: u16) -
         align: Align::Center,
         valign: VAlign::Center,
         font_size: None,
+        glyph: None,
         shift_keycode: None,
         symbol_font: false,
     }
@@ -136,7 +138,10 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("0", Some(")"), 11),
             key("-", Some("_"), 12),
             key("=", Some("+"), 13),
-            mod_key("", K::KEY_BACKSPACE, Behavior::Generic, 1.4, Left, Bottom),
+            KeyDef {
+                glyph: Some("\u{232B}"), // ⌫
+                ..mod_key("", K::KEY_BACKSPACE, Behavior::Generic, 1.4, Left, Bottom)
+            },
         ],
         vec![
             mod_key("Tab", K::KEY_TAB, Behavior::Generic, 1.4, Left, Bottom),
@@ -155,14 +160,17 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("\\", Some("|"), 43),
         ],
         vec![
-            mod_key(
-                "Caps",
-                K::KEY_CAPSLOCK,
-                Behavior::Generic,
-                1.6,
-                Left,
-                Bottom,
-            ),
+            KeyDef {
+                glyph: Some("\u{21EA}"), // ⇪
+                ..mod_key(
+                    "Caps",
+                    K::KEY_CAPSLOCK,
+                    Behavior::Generic,
+                    1.6,
+                    Left,
+                    Bottom,
+                )
+            },
             key("a", Some("A"), 30),
             key("s", Some("S"), 31),
             key("d", Some("D"), 32),
@@ -174,17 +182,23 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("l", Some("L"), 38),
             key(";", Some(":"), 39),
             key("'", Some("\""), 40),
-            mod_key("Enter", K::KEY_ENTER, Behavior::Generic, 1.7, Right, Bottom),
+            KeyDef {
+                glyph: Some("\u{21B5}"), // ↵
+                ..mod_key("Enter", K::KEY_ENTER, Behavior::Generic, 1.7, Right, Bottom)
+            },
         ],
         vec![
-            mod_key(
-                "Shift",
-                K::KEY_LEFTSHIFT,
-                Behavior::Shift,
-                2.0,
-                Left,
-                Bottom,
-            ),
+            KeyDef {
+                glyph: Some("\u{21E7}"), // ⇧
+                ..mod_key(
+                    "Shift",
+                    K::KEY_LEFTSHIFT,
+                    Behavior::Shift,
+                    2.0,
+                    Left,
+                    Bottom,
+                )
+            },
             key("z", Some("Z"), 44),
             key("x", Some("X"), 45),
             key("c", Some("C"), 46),
@@ -195,17 +209,23 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key(",", Some("<"), 51),
             key(".", Some(">"), 52),
             key("/", Some("?"), 53),
-            mod_key(
-                "Shift",
-                K::KEY_RIGHTSHIFT,
-                Behavior::Shift,
-                2.0,
-                Right,
-                Bottom,
-            ),
+            KeyDef {
+                glyph: Some("\u{21E7}"), // ⇧
+                ..mod_key(
+                    "Shift",
+                    K::KEY_RIGHTSHIFT,
+                    Behavior::Shift,
+                    2.0,
+                    Right,
+                    Bottom,
+                )
+            },
         ],
         vec![
-            mod_key("", 0, Behavior::Emoji, 1.2, Align::Center, VAlign::Center),
+            KeyDef {
+                glyph: Some("\u{263A}"), // ☺
+                ..mod_key("", 0, Behavior::Emoji, 1.2, Align::Center, VAlign::Center)
+            },
             KeyDef {
                 width_weight: 6.0,
                 align: Align::Left,
@@ -234,7 +254,10 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
                     VAlign::Center,
                 )
             },
-            mod_key("Move", 0, Behavior::Move, 1.4, Align::Center, Top),
+            KeyDef {
+                glyph: Some("\u{2328}"), // ⌨
+                ..mod_key("Move", 0, Behavior::Move, 1.4, Align::Center, Top)
+            },
         ],
     ]
 }

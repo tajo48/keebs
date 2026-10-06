@@ -303,8 +303,17 @@ impl Screen {
         for key in vkb.all_key_layouts() {
             let mut input_state = InputState::Inactive;
             for ptr in &pointers {
-                if ptr.in_box(key.x, key.y, key.w, key.h) && ptr.state > input_state {
-                    input_state = ptr.state;
+                if ptr.state == InputState::Inactive {
+                    continue;
+                }
+                // Pointer coords are stored as fractions of the window; keys
+                // are laid out in pixels — compare in pixel space (this was
+                // the dead-touchpad bug: fracs were compared to px rects).
+                let (px, py) = state.frac_to_abs(ptr.frac);
+                if px >= key.x && py >= key.y && px <= key.x + key.w && py <= key.y + key.h {
+                    if ptr.state > input_state {
+                        input_state = ptr.state;
+                    }
                 }
             }
             let kd = &vkb.keys[key.row][key.col];
@@ -392,10 +401,74 @@ impl Screen {
                     .unwrap_or(if kd.modifier { 20.0 } else { 26.0 });
                 self.draw_label(label, kd, &key, text_color, kd.align, kd.valign, size);
             }
+
+            // Button-hint glyph (Unicode stand-in for the Python PNG icons),
+            // drawn on the opposite side from the label.
+            if let Some(glyph) = kd.glyph {
+                let (ga, gv) = match kd.align {
+                    Align::Left => (Align::Right, VAlign::Center),
+                    Align::Right => (Align::Left, VAlign::Center),
+                    Align::Center => (Align::Center, VAlign::Center),
+                };
+                self.draw_symbol(glyph, &key, text_color, ga, gv);
+            }
         }
 
         unsafe {
             (s.render_present)(self.renderer);
+        }
+    }
+
+    fn draw_symbol(
+        &mut self,
+        glyph: &str,
+        key: &KeyLayout,
+        color: (u8, u8, u8),
+        align: Align,
+        valign: VAlign,
+    ) {
+        if glyph.is_empty() {
+            return;
+        }
+        let cache_key = (18, true, color, glyph.to_string());
+        let tex = match self.tex_cache.get(&cache_key) {
+            Some(v) => *v,
+            None => {
+                let Some(tex) = sdl3::render_text_texture(
+                    self.renderer,
+                    self.font_symbol_small,
+                    glyph,
+                    self.color(color),
+                ) else {
+                    return;
+                };
+                self.tex_cache.insert(cache_key, tex);
+                tex
+            }
+        };
+        let (tw, th) = (tex.1 as f32, tex.2 as f32);
+        let x = match align {
+            Align::Left => key.x + 8.0,
+            Align::Right => key.x + key.w - tw - 8.0,
+            Align::Center => key.x + (key.w - tw) / 2.0,
+        };
+        let y = match valign {
+            VAlign::Top => key.y + 3.0,
+            VAlign::Bottom => key.y + key.h - th - 4.0,
+            VAlign::Center => key.y + (key.h - th) / 2.0,
+        };
+        let dst = SDL_FRect { x, y, w: tw, h: th };
+        unsafe {
+            (sdl().render_texture)(self.renderer, tex.0, std::ptr::null(), &dst);
+        }
+    }
+
+    /// Re-assert the always-on-top hint; compositors/WMs drop topmost when
+    /// other windows raise, so the main loop calls this periodically (same
+    /// reason adusk.py has `_reassert_topmost`).
+    pub fn assert_topmost(&self) {
+        unsafe {
+            (sdl().set_window_always_on_top)(self.window, true);
         }
     }
 
