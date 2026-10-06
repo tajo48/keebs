@@ -42,28 +42,70 @@ pub struct Screen {
     tex_cache: HashMap<(i32, bool, (u8, u8, u8), String), (sdl3::SdlTexture, i32, i32)>,
 }
 
-fn font_candidates() -> Vec<String> {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let data = format!("{manifest}/../linux/data/fonts");
-    let mut v = vec![
-        format!("{data}/Selawik-Semibold.ttf"),
-        format!("{data}/DejaVuSansCondensed-Bold.ttf"),
-        // System fallbacks (screen.py lists).
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf".to_string(),
-        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf".to_string(),
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf".to_string(),
-    ];
-    // Symbol font: bundled DejaVu covers the geometric arrows.
-    v.push(format!("{data}/DejaVuSansCondensed-Bold.ttf"));
-    v.push("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string());
+/// Directories to search for the bundled fonts, in order:
+/// 1. $KEEBS_FONT_DIR (set by the nix wrapper to $out/share/keebs/fonts)
+/// 2. next to the binary (nix store layout: ../share/keebs/fonts, ./fonts)
+/// 3. the dev checkout's bundled copy (keebs/fonts, linux/data/fonts)
+fn font_dirs() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(dir) = std::env::var("KEEBS_FONT_DIR") {
+        v.push(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            v.push(format!("{}/../share/keebs/fonts", dir.display()));
+            v.push(format!("{}/fonts", dir.display()));
+        }
+    }
+    v.push(format!("{}/fonts", env!("CARGO_MANIFEST_DIR")));
+    v.push(format!(
+        "{}/../linux/data/fonts",
+        env!("CARGO_MANIFEST_DIR")
+    ));
     v
 }
 
-fn first_existing(paths: &[String]) -> Option<String> {
-    paths
-        .iter()
+fn find_font(dirs: &[String], filename: &str) -> Option<String> {
+    dirs.iter()
+        .map(|d| format!("{d}/{filename}"))
         .find(|p| std::path::Path::new(p).is_file())
-        .cloned()
+}
+
+/// (main font path, symbol font path). Selawik Semibold is the Steam
+/// Big-Picture-look font; DejaVu covers the geometric arrows. System fonts
+/// are fallbacks only (screen.py's candidate lists).
+fn resolve_fonts() -> (String, String) {
+    let dirs = font_dirs();
+    let system_main = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ];
+    let system_sym = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ];
+    let main = find_font(&dirs, "Selawik-Semibold.ttf")
+        .or_else(|| find_font(&dirs, "DejaVuSansCondensed-Bold.ttf"))
+        .or_else(|| {
+            system_main
+                .iter()
+                .find(|p| std::path::Path::new(p).is_file())
+                .map(|p| p.to_string())
+        })
+        .unwrap_or_else(|| "Selawik-Semibold.ttf".to_string());
+    let sym = find_font(&dirs, "DejaVuSansCondensed-Bold.ttf")
+        .or_else(|| {
+            system_sym
+                .iter()
+                .find(|p| std::path::Path::new(p).is_file())
+                .map(|p| p.to_string())
+        })
+        .unwrap_or_else(|| main.clone());
+    (main, sym)
 }
 
 impl Screen {
@@ -122,10 +164,7 @@ impl Screen {
             );
             (s.set_render_draw_blend_mode)(renderer, sdl3::SDL_BLENDMODE_BLEND);
 
-            let paths = font_candidates();
-            let font_path =
-                first_existing(&paths[..paths.len() - 2]).unwrap_or_else(|| paths[1].clone());
-            let sym_path = paths[paths.len() - 2].clone();
+            let (font_path, sym_path) = resolve_fonts();
             println!("osk: font `{font_path}`");
 
             let font_scale = BASE_HEIGHT / 369.0 * (h as f32 / BASE_HEIGHT);

@@ -34,7 +34,10 @@
             doCheck = false;
 
             postInstall = ''
+              mkdir -p $out/share/keebs/fonts
+              install -Dm644 fonts/*.ttf fonts/*.txt $out/share/keebs/fonts/
               wrapProgram $out/bin/keebs \
+                --set KEEBS_FONT_DIR "$out/share/keebs/fonts" \
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath sdlLibs}"
             '';
 
