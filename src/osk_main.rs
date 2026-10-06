@@ -25,6 +25,15 @@ pub fn run(stop: Arc<StopFlag>) {
     state.height.store(h as usize, Ordering::SeqCst);
 
     unsafe {
+        // Force X11/XWayland like the Python app's effective environment:
+        // SDL_SetWindowAlwaysOnTop and the X11 no-focus WM hints only work
+        // there (on native Wayland both are no-ops). Respected only when the
+        // user hasn't chosen a driver explicitly.
+        if std::env::var_os("SDL_VIDEODRIVER").is_none() {
+            let name = std::ffi::CString::new("SDL_VIDEODRIVER").unwrap();
+            let val = std::ffi::CString::new("x11").unwrap();
+            (s.set_hint)(name.as_ptr(), val.as_ptr());
+        }
         let hint = cstring_hint();
         let _ = (s.set_hint)(hint.as_ptr(), b"1\0".as_ptr() as *const _);
         if !(s.init)(sdl3::SDL_INIT_VIDEO | sdl3::SDL_INIT_EVENTS) {

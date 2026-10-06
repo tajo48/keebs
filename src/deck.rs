@@ -36,6 +36,24 @@ pub fn deck_present() -> bool {
     }
 }
 
+/// Raw /dev/hidraw HIDIOCSFEATURE: _IOC(WRITE|READ, 'H', 0x06, len).
+fn write_hidraw_feature(path: &str, report: &[u8]) -> bool {
+    let Ok(c) = std::ffi::CString::new(path) else {
+        return false;
+    };
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR) };
+    if fd < 0 {
+        return false;
+    }
+    let len = report.len();
+    let req: libc::c_ulong = ((3u64 << 30) | ((len as u64) << 16) | (0x48u64 << 8) | 0x06) as _;
+    let rc = unsafe { libc::ioctl(fd, req, report.as_ptr()) };
+    unsafe {
+        libc::close(fd);
+    }
+    rc >= 0
+}
+
 pub type YieldCheck = Box<dyn Fn() -> bool + Send + Sync>;
 
 pub struct DeckController {
@@ -45,6 +63,9 @@ pub struct DeckController {
     opened: AtomicBool,
     lizard_enabled: AtomicBool,
     should_yield: Option<YieldCheck>,
+    /// /dev/hidraw node that accepted the lizard feature report (the raw
+    /// HIDIOCSFEATURE path), remembered so refreshes don't re-scan.
+    hidraw_lizard_path: Mutex<Option<String>>,
 }
 
 impl DeckController {
@@ -65,6 +86,7 @@ impl DeckController {
             opened: AtomicBool::new(false),
             lizard_enabled: AtomicBool::new(passive),
             should_yield,
+            hidraw_lizard_path: Mutex::new(None),
         })
     }
 
@@ -74,12 +96,63 @@ impl DeckController {
     }
 
     fn send_lizard(&self, dev: &HidDevice) {
-        let report = if self.lizard_enabled.load(Ordering::SeqCst) {
+        let enabled = self.lizard_enabled.load(Ordering::SeqCst);
+        let report = if enabled {
             &ENABLE_LIZARD_REPORT
         } else {
             &DISABLE_LIZARD_REPORT
         };
-        let _ = dev.send_feature_report(report);
+        let rc = dev.send_feature_report(report);
+        // The firmware re-enables lizard on its own timer (observed: a
+        // successful disable wears off within seconds — hence the 0.2 s
+        // refresh while we want it OFF). If the hidapi feature-report send
+        // is not reaching the firmware (backend differences vs the Python
+        // libusb setup), fall back to the raw /dev/hidraw HIDIOCSFEATURE
+        // ioctl on the Deck's own nodes.
+        let hidapi_ok = rc.is_ok();
+        if let Err(e) = &rc {
+            eprintln!("deck: hidapi lizard send failed: {e}");
+        }
+        let hidraw_ok = self.send_lizard_hidraw(report);
+        if !enabled && !hidapi_ok && !hidraw_ok {
+            eprintln!("deck: WARNING no lizard disable path worked");
+        }
+    }
+
+    /// Send the lizard feature report via the kernel hidraw ioctl
+    /// (HIDIOCSFEATURE) on the Deck's hidraw nodes — the same mechanism the
+    /// Python repo uses for the Triton. Remembers the node that accepted it.
+    fn send_lizard_hidraw(&self, report: &[u8; 65]) -> bool {
+        let mut guard = self.hidraw_lizard_path.lock().unwrap();
+        if let Some(path) = guard.as_ref() {
+            return write_hidraw_feature(path, report);
+        }
+        let Ok(entries) = std::fs::read_dir("/sys/class/hidraw") else {
+            return false;
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in names {
+            if !name.starts_with("hidraw") {
+                continue;
+            }
+            let Ok(real) = std::fs::canonicalize(format!("/sys/class/hidraw/{name}/device")) else {
+                continue;
+            };
+            if !real.to_string_lossy().to_uppercase().contains("28DE:1205") {
+                continue;
+            }
+            let path = format!("/dev/{name}");
+            if write_hidraw_feature(&path, report) {
+                println!("deck: lizard report accepted via {path}");
+                *guard = Some(path);
+                return true;
+            }
+        }
+        false
     }
 
     /// Open the vendor data interface — the one streaming 64-byte 0x01

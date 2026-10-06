@@ -22,6 +22,7 @@ pub type SdlWindow = *mut c_void;
 pub type SdlRenderer = *mut c_void;
 pub type SdlTexture = *mut c_void;
 pub type TtfFont = *mut c_void;
+pub type SdlProps = u32;
 
 // ---------------------------------------------------------------------------
 // Constants (mirror sdl3w).
@@ -59,6 +60,21 @@ pub const SDL_BUTTON_LMASK: u32 = 1;
 // ---------------------------------------------------------------------------
 // Structs (exact C layouts, mirroring sdl3w's ctypes declarations).
 // ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SDL_FPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SDL_Vertex {
+    pub position: SDL_FPoint,
+    pub color: SDL_Color,
+    pub tex_coord: SDL_FPoint,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -190,6 +206,17 @@ type FnBoolRFRect = unsafe extern "C" fn(SdlRenderer, *const SDL_FRect) -> bool;
 type FnBoolRTex =
     unsafe extern "C" fn(SdlRenderer, SdlTexture, *const SDL_FRect, *const SDL_FRect) -> bool;
 type FnBoolR4f = unsafe extern "C" fn(SdlRenderer, f32, f32, f32, f32) -> bool;
+type FnBoolRGeom = unsafe extern "C" fn(
+    SdlRenderer,
+    SdlTexture,
+    *const SDL_Vertex,
+    c_int,
+    *const c_int,
+    c_int,
+) -> bool;
+type FnProps = unsafe extern "C" fn(SdlWindow) -> SdlProps;
+type FnPointerProp = unsafe extern "C" fn(SdlProps, *const c_char, *mut c_void) -> *mut c_void;
+type FnNumberProp = unsafe extern "C" fn(SdlProps, *const c_char, i64) -> i64;
 type FnTexture = unsafe extern "C" fn(SdlRenderer, *mut SDL_Surface) -> SdlTexture;
 type FnVoidTexture = unsafe extern "C" fn(SdlTexture);
 type FnBoolTu8 = unsafe extern "C" fn(SdlTexture, u8) -> bool;
@@ -222,6 +249,10 @@ pub struct Sdl {
     pub render_fill_rect: FnBoolRFRect,
     pub render_texture: FnBoolRTex,
     pub render_line: FnBoolR4f,
+    pub render_geometry: FnBoolRGeom,
+    pub get_window_properties: FnProps,
+    pub get_pointer_property: FnPointerProp,
+    pub get_number_property: FnNumberProp,
     pub render_present: FnBoolR,
     pub create_texture_from_surface: FnTexture,
     pub destroy_texture: FnVoidTexture,
@@ -276,6 +307,10 @@ impl Sdl {
                 render_fill_rect: bind(&core, b"SDL_RenderFillRect\0"),
                 render_texture: bind(&core, b"SDL_RenderTexture\0"),
                 render_line: bind(&core, b"SDL_RenderLine\0"),
+                render_geometry: bind(&core, b"SDL_RenderGeometry\0"),
+                get_window_properties: bind(&core, b"SDL_GetWindowProperties\0"),
+                get_pointer_property: bind(&core, b"SDL_GetPointerProperty\0"),
+                get_number_property: bind(&core, b"SDL_GetNumberProperty\0"),
                 render_present: bind(&core, b"SDL_RenderPresent\0"),
                 create_texture_from_surface: bind(&core, b"SDL_CreateTextureFromSurface\0"),
                 destroy_texture: bind(&core, b"SDL_DestroyTexture\0"),
@@ -342,6 +377,104 @@ static SDL: OnceLock<Sdl> = OnceLock::new();
 
 pub fn sdl() -> &'static Sdl {
     SDL.get_or_init(|| Sdl::load().unwrap_or_else(|e| panic!("sdl3: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// X11 no-focus treatment (port of adusk.py `_make_window_no_focus_x11`).
+// WM_HINTS.input = False stops the window manager from ever giving the OSK
+// keyboard focus, so clicks/typing keep landing in the app behind it.
+// ---------------------------------------------------------------------------
+
+const X11_DISPLAY_PROP: &[u8] = b"SDL.window.x11.display\0";
+const X11_WINDOW_PROP: &[u8] = b"SDL.window.x11.window\0";
+
+#[repr(C)]
+struct XWMHints {
+    flags: i64,
+    input: i32,
+    initial_state: i32,
+    icon_pixmap: u64,
+    icon_window: u64,
+    icon_x: i32,
+    icon_y: i32,
+    icon_mask: u64,
+    window_group: u64,
+}
+
+const INPUT_HINT: i64 = 0x1;
+
+type XGetWMHintsFn = unsafe extern "C" fn(*mut c_void, u64) -> *mut XWMHints;
+type XSetWMHintsFn = unsafe extern "C" fn(*mut c_void, u64, *mut XWMHints) -> i32;
+type XFreeFn = unsafe extern "C" fn(*mut c_void);
+type XFlushFn = unsafe extern "C" fn(*mut c_void) -> i32;
+
+/// Best-effort: applies the no-focus WM hints when the SDL window is backed
+/// by X11/XWayland; silently does nothing otherwise (Wayland native).
+pub fn make_window_no_focus(window: SdlWindow) {
+    let s = sdl();
+    unsafe {
+        let props = (s.get_window_properties)(window);
+        if props == 0 {
+            return;
+        }
+        let display = (s.get_pointer_property)(
+            props,
+            X11_DISPLAY_PROP.as_ptr() as *const c_char,
+            std::ptr::null_mut(),
+        );
+        let xid = (s.get_number_property)(props, X11_WINDOW_PROP.as_ptr() as *const c_char, 0);
+        if display.is_null() || xid <= 0 {
+            return; // not an X11 window
+        }
+        if !x11_disable_input(display, xid as u64) {
+            eprintln!("osk: could not set X11 no-focus WM hints (libX11 missing?)");
+        }
+    }
+}
+
+unsafe fn x11_disable_input(display: *mut c_void, xid: u64) -> bool {
+    // SAFETY: classic Xlib usage; the dlopen'd libX11 outlives every call in
+    // this function (dropped at scope exit after XFlush).
+    unsafe {
+        let Ok(lib) = Library::new("libX11.so.6") else {
+            return false;
+        };
+        let get: XGetWMHintsFn = match lib.get(b"XGetWMHints\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+        let set: XSetWMHintsFn = match lib.get(b"XSetWMHints\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+        let xfree: XFreeFn = match lib.get(b"XFree\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+        let xflush: XFlushFn = match lib.get(b"XFlush\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+
+        let existing = get(display, xid);
+        let ours = existing.is_null();
+        let hints = if ours {
+            Box::into_raw(Box::new(std::mem::zeroed::<XWMHints>()))
+        } else {
+            existing
+        };
+        (*hints).flags |= INPUT_HINT;
+        (*hints).input = 0; // never take keyboard focus
+        let rc = set(display, xid, hints);
+        if ours {
+            drop(Box::from_raw(hints));
+        } else {
+            xfree(existing as *mut c_void);
+        }
+        xflush(display);
+        rc != 0
+        // `lib` drops (dlclose) here — all symbol use is complete by then.
+    }
 }
 
 /// Convenience: render UTF-8 text to a blended surface, upload as a texture,

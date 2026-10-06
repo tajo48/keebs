@@ -155,6 +155,9 @@ impl Screen {
                 s.get_error_string()
             );
             (s.set_window_position)(window, win_x, win_y);
+            // X11/XWayland: never take keyboard focus (WM_HINTS.input=False),
+            // so clicks/typing keep landing in the app behind the OSK.
+            sdl3::make_window_no_focus(window);
 
             let renderer = (s.create_renderer)(window, std::ptr::null());
             assert!(
@@ -414,8 +417,58 @@ impl Screen {
             }
         }
 
+        // Pointer dots: show where each finger is on the trackpads
+        // (screen.py render_ptr). Clicking pads paint the dot blue.
+        for ptr in &pointers {
+            if ptr.state == InputState::Inactive {
+                continue;
+            }
+            let (cx, cy) = state.frac_to_abs(ptr.frac);
+            let (color, alpha) = if ptr.state == InputState::Click {
+                (KEY_CLICK, 220u8)
+            } else {
+                ((0xFF, 0xFF, 0xFF), 150u8)
+            };
+            self.fill_circle(cx, cy, 13.0, color, alpha);
+        }
+
         unsafe {
             (s.render_present)(self.renderer);
+        }
+    }
+
+    /// Filled circle via SDL_RenderGeometry (triangle fan).
+    fn fill_circle(&self, cx: f32, cy: f32, r: f32, color: (u8, u8, u8), alpha: u8) {
+        const SEGMENTS: usize = 28;
+        let vtx = |x: f32, y: f32| sdl3::SDL_Vertex {
+            position: sdl3::SDL_FPoint { x, y },
+            color: sdl3::SDL_Color {
+                r: color.0,
+                g: color.1,
+                b: color.2,
+                a: alpha,
+            },
+            tex_coord: sdl3::SDL_FPoint { x: 0.0, y: 0.0 },
+        };
+        let mut verts = Vec::with_capacity(SEGMENTS + 2);
+        verts.push(vtx(cx, cy));
+        for i in 0..=SEGMENTS {
+            let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            verts.push(vtx(cx + a.cos() * r, cy + a.sin() * r));
+        }
+        let mut indices = Vec::with_capacity(SEGMENTS * 3);
+        for i in 0..SEGMENTS {
+            indices.extend_from_slice(&[0, (i + 1) as i32, (i + 2) as i32]);
+        }
+        unsafe {
+            (sdl().render_geometry)(
+                self.renderer,
+                std::ptr::null_mut(),
+                verts.as_ptr(),
+                (SEGMENTS + 2) as i32,
+                indices.as_ptr(),
+                (SEGMENTS * 3) as i32,
+            );
         }
     }
 
