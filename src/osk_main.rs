@@ -45,6 +45,9 @@ pub fn run(stop: Arc<StopFlag>) {
         }
     }
 
+    // Gamepad rumble (the Deck's actual haptics transport).
+    crate::gamepad::init();
+
     // Controller input thread (owns the device, lizard OFF).
     {
         let st = Arc::clone(&state);

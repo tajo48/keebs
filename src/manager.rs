@@ -55,9 +55,9 @@ impl Device {
             Device::Triton(sc) => {
                 sc.haptic_click(550, -6, 5, 18);
             }
-            Device::Deck(d) => {
-                d.haptic_click(550, -6, 5);
-            }
+            // The Deck ignores the 0x83 tone reports — the Python app's Deck
+            // haptics came from SDL gamepad rumble (see gamepad.rs).
+            Device::Deck(_) => crate::gamepad::haptic_tick(),
         }
     }
 
@@ -67,9 +67,7 @@ impl Device {
             Device::Triton(sc) => {
                 sc.haptic_pad_click();
             }
-            Device::Deck(d) => {
-                d.haptic_pad_click();
-            }
+            Device::Deck(_) => crate::gamepad::pad_click(),
         }
     }
 }

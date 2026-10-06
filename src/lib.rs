@@ -1,5 +1,6 @@
 pub mod deck;
 pub mod events;
+pub mod gamepad;
 pub mod manager;
 pub mod osk_main;
 pub mod osk_state;

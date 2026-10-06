@@ -23,12 +23,14 @@ pub type SdlRenderer = *mut c_void;
 pub type SdlTexture = *mut c_void;
 pub type TtfFont = *mut c_void;
 pub type SdlProps = u32;
+pub type SdlGamepad = *mut c_void;
 
 // ---------------------------------------------------------------------------
 // Constants (mirror sdl3w).
 // ---------------------------------------------------------------------------
 
 pub const SDL_INIT_VIDEO: u32 = 0x0000_0020;
+pub const SDL_INIT_GAMEPAD: u32 = 0x0000_2000;
 pub const SDL_INIT_EVENTS: u32 = 0x0000_4000;
 
 pub const SDL_WINDOW_HIDDEN: u64 = 0x0000_0000_0000_0008;
@@ -235,11 +237,18 @@ type FnVoidFont = unsafe extern "C" fn(TtfFont);
 type FnVoidSurface = unsafe extern "C" fn(*mut SDL_Surface);
 type FnBoolTtf = unsafe extern "C" fn() -> bool;
 type FnBoolEvent = unsafe extern "C" fn(*mut SDL_Event) -> bool;
+type GetGamepadsFn = unsafe extern "C" fn(*mut c_int) -> *mut u32;
+type IsGamepadFn = unsafe extern "C" fn(u32) -> bool;
+type OpenGamepadFn = unsafe extern "C" fn(u32) -> SdlGamepad;
+type CloseGamepadFn = unsafe extern "C" fn(SdlGamepad);
+type RumbleFn = unsafe extern "C" fn(SdlGamepad, u16, u16, u32) -> bool;
+type SdlFreeFn = unsafe extern "C" fn(*mut c_void);
 
 pub struct Sdl {
     _core: Library,
     _ttf: Library,
     pub init: FnBool1u32,
+    pub init_subsystem: FnBool1u32,
     pub set_hint: FnBool2CharPtr,
     pub get_error: FnCharPtr,
     pub get_primary_display: FnU32,
@@ -267,6 +276,12 @@ pub struct Sdl {
     pub destroy_texture: FnVoidTexture,
     pub set_texture_alpha_mod: FnBoolTu8,
     pub poll_event: FnBoolEvent,
+    pub get_gamepads: GetGamepadsFn,
+    pub is_gamepad: IsGamepadFn,
+    pub open_gamepad: OpenGamepadFn,
+    pub close_gamepad: CloseGamepadFn,
+    pub rumble_gamepad: RumbleFn,
+    pub sdl_free: SdlFreeFn,
     pub ttf_init: FnBoolTtf,
     pub ttf_open_font: FnFont,
     pub ttf_close_font: FnVoidFont,
@@ -298,6 +313,7 @@ impl Sdl {
         Ok(unsafe {
             Self {
                 init: bind(&core, b"SDL_Init\0"),
+                init_subsystem: bind(&core, b"SDL_InitSubSystem\0"),
                 set_hint: bind(&core, b"SDL_SetHint\0"),
                 get_error: bind(&core, b"SDL_GetError\0"),
                 get_primary_display: bind(&core, b"SDL_GetPrimaryDisplay\0"),
@@ -325,6 +341,12 @@ impl Sdl {
                 destroy_texture: bind(&core, b"SDL_DestroyTexture\0"),
                 set_texture_alpha_mod: bind(&core, b"SDL_SetTextureAlphaMod\0"),
                 poll_event: bind(&core, b"SDL_PollEvent\0"),
+                get_gamepads: bind(&core, b"SDL_GetGamepads\0"),
+                is_gamepad: bind(&core, b"SDL_IsGamepad\0"),
+                open_gamepad: bind(&core, b"SDL_OpenGamepad\0"),
+                close_gamepad: bind(&core, b"SDL_CloseGamepad\0"),
+                rumble_gamepad: bind(&core, b"SDL_RumbleGamepad\0"),
+                sdl_free: bind(&core, b"SDL_free\0"),
                 ttf_init: bind(&ttf, b"TTF_Init\0"),
                 ttf_open_font: bind(&ttf, b"TTF_OpenFont\0"),
                 ttf_close_font: bind(&ttf, b"TTF_CloseFont\0"),
