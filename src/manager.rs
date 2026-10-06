@@ -17,6 +17,11 @@ use crate::triton::SteamController;
 use crate::uinput::{Keyboard, Mouse, keys as K};
 use crate::vkb;
 
+fn note_rumble_ok() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| println!("deck: 0x8F haptic report accepted"));
+}
+
 // Stick thresholds / cadences (controller.py class constants).
 const STICK_DEADZONE: f32 = 14000.0;
 const STICK_HOLD_DELAY: f32 = 0.5;
@@ -55,9 +60,16 @@ impl Device {
             Device::Triton(sc) => {
                 sc.haptic_click(550, -6, 5, 18);
             }
-            // The Deck ignores the 0x83 tone reports — the Python app's Deck
-            // haptics came from SDL gamepad rumble (see gamepad.rs).
-            Device::Deck(_) => crate::gamepad::haptic_tick(),
+            // Deck: try the classic 0x8F haptic report first (the kernel
+            // hid-steam driver's format), fall back to SDL gamepad rumble
+            // (a no-op on this setup — SDL sees no gamepads for the Deck).
+            Device::Deck(d) => {
+                if d.rumble(0xFFFF, 0xFFFF) {
+                    note_rumble_ok();
+                } else {
+                    crate::gamepad::haptic_tick();
+                }
+            }
         }
     }
 
@@ -67,7 +79,13 @@ impl Device {
             Device::Triton(sc) => {
                 sc.haptic_pad_click();
             }
-            Device::Deck(_) => crate::gamepad::pad_click(),
+            Device::Deck(d) => {
+                if d.rumble(0xFFFF, 0xFFFF) {
+                    note_rumble_ok();
+                } else {
+                    crate::gamepad::pad_click();
+                }
+            }
         }
     }
 }

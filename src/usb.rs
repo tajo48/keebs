@@ -244,6 +244,68 @@ impl LibusbSession {
         ok || rc == 64
     }
 
+    /// Send an arbitrary feature-report payload (report id via wValue).
+    pub fn send_feature_payload(&self, report_id: u8, payload: &[u8]) -> bool {
+        let rc = unsafe {
+            (self.control)(
+                self.handle,
+                0x21,
+                0x09,
+                (0x03 << 8) | report_id as u16,
+                self.iface as u16,
+                payload.as_ptr() as *mut u8,
+                payload.len() as u16,
+                1000,
+            )
+        };
+        rc == payload.len() as i32
+    }
+
+    /// SET_REPORT OUTPUT with the CLEAN body (id only in wValue).
+    pub fn control_output(&self, report_id: u8, body: &[u8]) -> bool {
+        let rc = unsafe {
+            (self.control)(
+                self.handle,
+                0x21,
+                0x09,
+                (0x02 << 8) | report_id as u16,
+                self.iface as u16,
+                body.as_ptr() as *mut u8,
+                body.len() as u16,
+                1000,
+            )
+        };
+        rc == body.len() as i32
+    }
+
+    /// SET_REPORT OUTPUT with the report ID DUPLICATED as payload byte 0 —
+    /// the exact wire shape pip-hidapi's libusb backend emits (its known
+    /// quirk, which the Deck demonstrably accepts — lizard disable rode it).
+    pub fn control_output_dup(&self, report_id: u8, report: &[u8]) -> bool {
+        self.control_output_dup_n(report_id, report, 0x02)
+    }
+
+    /// SET_REPORT FEATURE with the ID duplicated in the payload.
+    pub fn control_feature_dup(&self, report_id: u8, report: &[u8]) -> bool {
+        self.control_output_dup_n(report_id, report, 0x03)
+    }
+
+    fn control_output_dup_n(&self, report_id: u8, report: &[u8], rtype: u8) -> bool {
+        let rc = unsafe {
+            (self.control)(
+                self.handle,
+                0x21,
+                0x09,
+                (rtype as u16) << 8 | report_id as u16,
+                self.iface as u16,
+                report.as_ptr() as *mut u8,
+                report.len() as u16,
+                1000,
+            )
+        };
+        rc == report.len() as i32
+    }
+
     /// Send a 65-byte feature report (report id at [0]) as a class
     /// SET_REPORT control transfer on the claimed vendor interface.
     /// Returns true when the firmware accepted all 64 payload bytes.

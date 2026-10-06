@@ -69,10 +69,11 @@ impl DeckController {
         should_yield: Option<YieldCheck>,
         stop: Arc<StopFlag>,
     ) -> Result<Self, ()> {
+        let flag = AtomicBool::new(passive);
         Ok(Self {
             stop,
             opened: AtomicBool::new(false),
-            lizard_enabled: AtomicBool::new(passive),
+            lizard_enabled: flag,
             should_yield,
             session: Mutex::new(None),
         })
@@ -134,10 +135,33 @@ impl DeckController {
 
     fn write_report(&self, report: &[u8; 65]) -> bool {
         let guard = self.session.lock().unwrap();
-        match guard.as_ref() {
-            Some(s) => s.send_output(report),
-            None => false,
+        let Some(s) = guard.as_ref() else {
+            return false;
+        };
+        // The Python deck driver's triple-channel `_send_haptic`, plus the
+        // wire shapes its pip-hidapi libusb backend actually put on the wire:
+        //   1. interrupt OUT, 65 B (id included)
+        //   2. interrupt OUT, 64 B (unnumbered variant)
+        //   3. SET_REPORT OUTPUT, clean 64 B body
+        //   4. SET_REPORT OUTPUT, 65 B payload with the ID duplicated
+        //      (hidapi-libusb's quirk — the shape lizard disable rode)
+        //   5. SET_REPORT FEATURE, 65 B payload with the ID duplicated
+        // A duplicate is benign (same tone restarted) — we can't detect
+        // which channel the firmware honors, so try them all, Python-style.
+        let r1 = s.write(report);
+        let r2 = s.write(&report[..64]);
+        let r3 = s.control_output(report[0], &report[1..]);
+        let r4 = s.control_output_dup(report[0], report);
+        let r5 = s.control_feature_dup(report[0], report);
+        {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                println!(
+                    "deck: haptic write channels int65={r1} int64={r2} out64={r3} outDup65={r4} featDup65={r5}"
+                );
+            });
         }
+        r1 || r2 || r3 || r4 || r5
     }
 
     pub fn haptic_tone(&self, actuator: u8, freq_hz: u32, gain: i8, count: u16) -> bool {
@@ -160,6 +184,76 @@ impl DeckController {
             let report = build_haptic_tone_report(act, 300, HAPTIC_PAD_CLICK_GAIN, 6);
             self.write_report(&report);
         }
+    }
+
+    /// Classic-protocol haptics — the format the mainline `hid-steam` kernel
+    /// driver uses for the original Steam Controller (which the tethered
+    /// Deck emulates): feature report 0x8F carrying a dual-motor
+    /// vibration word pair. Sent over the same SET_REPORT channel that
+    /// demonstrably reaches the firmware (it's what disables lizard).
+    /// word1/word2 are 16-bit motor intensities (hid-steam rumble words).
+    pub fn rumble(&self, word1: u16, word2: u16) -> bool {
+        let payload: [u8; 10] = [
+            0x07, // length field (hid-steam: 0x07)
+            0x07, // haptic command
+            0x00, // pad/mode: both
+            (word1 & 0xFF) as u8,
+            (word1 >> 8) as u8,
+            (word2 & 0xFF) as u8,
+            (word2 >> 8) as u8,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        let guard = self.session.lock().unwrap();
+        match guard.as_ref() {
+            Some(s) => s.send_feature_payload(0x8F, &payload),
+            None => false,
+        }
+    }
+
+    /// One-shot diagnostic (debug rounds): fire several candidate encodings
+    /// of the classic 0x8F haptic report, labeled, so a physical buzz maps
+    /// directly to the right byte layout. Currently unused — kept for the
+    /// next reverse-engineering round if the pip-hidapi wire shapes fail.
+    #[allow(dead_code)]
+    fn haptic_probe(&self) {
+        thread::sleep(Duration::from_millis(300));
+        let variants: [(&str, [u8; 10]); 4] = [
+            (
+                "A dual-words@4",
+                [0x07, 0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00],
+            ),
+            (
+                "B dual-words@3",
+                [0x07, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                "C pulse pad0",
+                [0x07, 0x07, 0x00, 0x01, 0xFF, 0xFF, 0x10, 0x27, 0x08, 0x00],
+            ),
+            (
+                "D pulse pad1",
+                [0x07, 0x07, 0x01, 0x01, 0xFF, 0xFF, 0x10, 0x27, 0x08, 0x00],
+            ),
+        ];
+        for (name, payload) in variants {
+            let guard = self.session.lock().unwrap();
+            let sent = guard
+                .as_ref()
+                .map(|s| s.send_feature_payload(0x8F, &payload))
+                .unwrap_or(false);
+            drop(guard);
+            println!("deck: haptic probe {name} sent={sent} — buzz?");
+            thread::sleep(Duration::from_millis(600));
+        }
+        // E: the full 11-byte hid-steam report over interrupt OUT instead.
+        let report11 = [
+            0x8F, 0x07, 0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+        ];
+        let guard = self.session.lock().unwrap();
+        let sent = guard.as_ref().map(|s| s.write(&report11)).unwrap_or(false);
+        println!("deck: haptic probe E out-interrupt sent={sent} — buzz?");
     }
 
     // -- main loop ----------------------------------------------------------

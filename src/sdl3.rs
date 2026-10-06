@@ -239,6 +239,7 @@ type FnBoolTtf = unsafe extern "C" fn() -> bool;
 type FnBoolEvent = unsafe extern "C" fn(*mut SDL_Event) -> bool;
 type GetGamepadsFn = unsafe extern "C" fn(*mut c_int) -> *mut u32;
 type IsGamepadFn = unsafe extern "C" fn(u32) -> bool;
+type GamepadNameFn = unsafe extern "C" fn(u32) -> *const c_char;
 type OpenGamepadFn = unsafe extern "C" fn(u32) -> SdlGamepad;
 type CloseGamepadFn = unsafe extern "C" fn(SdlGamepad);
 type RumbleFn = unsafe extern "C" fn(SdlGamepad, u16, u16, u32) -> bool;
@@ -278,6 +279,7 @@ pub struct Sdl {
     pub poll_event: FnBoolEvent,
     pub get_gamepads: GetGamepadsFn,
     pub is_gamepad: IsGamepadFn,
+    pub get_gamepad_name_for_id: GamepadNameFn,
     pub open_gamepad: OpenGamepadFn,
     pub close_gamepad: CloseGamepadFn,
     pub rumble_gamepad: RumbleFn,
@@ -343,6 +345,7 @@ impl Sdl {
                 poll_event: bind(&core, b"SDL_PollEvent\0"),
                 get_gamepads: bind(&core, b"SDL_GetGamepads\0"),
                 is_gamepad: bind(&core, b"SDL_IsGamepad\0"),
+                get_gamepad_name_for_id: bind(&core, b"SDL_GetGamepadNameForID\0"),
                 open_gamepad: bind(&core, b"SDL_OpenGamepad\0"),
                 close_gamepad: bind(&core, b"SDL_CloseGamepad\0"),
                 rumble_gamepad: bind(&core, b"SDL_RumbleGamepad\0"),

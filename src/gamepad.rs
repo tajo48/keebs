@@ -58,16 +58,32 @@ fn rescan() {
         let mut pads = PADS.lock().unwrap();
         for i in 0..count {
             let id = *ids.add(i as usize);
+            let name = {
+                let p = (s.get_gamepad_name_for_id)(id);
+                if p.is_null() {
+                    "?".to_string()
+                } else {
+                    std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+                }
+            };
+            println!("gamepad: found id {id} `{name}` ({})", (s.is_gamepad)(id));
             if (s.is_gamepad)(id) {
                 let pad = (s.open_gamepad)(id);
                 if !pad.is_null() {
                     pads.push(Pad(pad));
+                } else {
+                    println!(
+                        "gamepad: open failed for `{name}`: {}",
+                        s.get_error_string()
+                    );
                 }
             }
         }
         (s.sdl_free)(ids as *mut c_void);
         if !pads.is_empty() {
             println!("gamepad: {} pad(s) open for rumble", pads.len());
+        } else {
+            println!("gamepad: no gamepads found for rumble");
         }
     }
 }
@@ -92,7 +108,9 @@ fn rumble(low: u16, high: u16, ms: u32) {
             let s = sdl();
             unsafe {
                 for pad in pads.iter() {
-                    (s.rumble_gamepad)(pad.0, low, high, ms);
+                    if !(s.rumble_gamepad)(pad.0, low, high, ms) {
+                        warn_rumble_failed();
+                    }
                 }
             }
             return;
@@ -104,7 +122,25 @@ fn rumble(low: u16, high: u16, ms: u32) {
     let s = sdl();
     unsafe {
         for pad in pads.iter() {
-            (s.rumble_gamepad)(pad.0, low, high, ms);
+            if !(s.rumble_gamepad)(pad.0, low, high, ms) {
+                warn_rumble_failed();
+            }
         }
+    }
+}
+
+/// Throttled: SDL returns false when the pad can't rumble (e.g. its kernel
+/// node vanished because our libusb session detached the interface).
+fn warn_rumble_failed() {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    let now = std::time::Instant::now();
+    let shout = match *last {
+        None => true,
+        Some(t) => now.duration_since(t).as_secs() >= 5,
+    };
+    if shout {
+        *last = Some(now);
+        eprintln!("gamepad: SDL_RumbleGamepad failed (pad unsupported or node gone)");
     }
 }
