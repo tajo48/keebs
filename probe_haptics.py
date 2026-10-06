@@ -114,7 +114,35 @@ def main():
         body[6] = 0xFF
         cands.append((f"S5 0x8f len{extra}", make_report(0x8F, body)))
 
-    print(f"\nfiring {len(cands)} candidates, {GAP}s apart — note the INDEX of any you FEEL\n")
+    # --- S6: haptic gain settings first — host haptics may default muted.
+    # Setting numbers swept around the known range; each is followed by a
+    # max-intensity 0x83 tone and a max-intensity 0x8f pulse so a working
+    # combination is audible.
+    print("\n--- S6: gain settings + re-fire ---")
+    for setting in range(8, 16):
+        for value in (0x30, 0xFF):
+            send_all(devs, make_report(0x01, [0x87, 0x03, setting, value, 0x00]))
+            time.sleep(0.15)
+            i1 = len(cands)
+            body = bytearray(8)
+            body[0] = 0x83
+            body[1] = 0
+            body[2] = 0x7F
+            body[3] = 550 & 0xFF
+            body[4] = 550 >> 8
+            body[5] = 0xFF
+            body[6] = 0x7F
+            cands.append((f"S6 gain set{setting}={value:#04x} then tone act0", make_report(0x83, body)))
+            i2 = len(cands)
+            body2 = bytes([0x07, 0x07, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00])
+            cands.append((f"S6 gain set{setting}={value:#04x} then 0x8f dual", make_report(0x8F, body2)))
+            print(f"[{i1:02d}] S6 set{setting}={value:#04x}+tone  [{i2:02d}] +dual", flush=True)
+            # send the pair now so S6 stays interactive
+            for rep in (cands[i1][1], cands[i2][1]):
+                send_all(devs, rep)
+                time.sleep(GAP)
+
+    print(f"\ncontinuing to the main sweep: {len(cands)} total candidates, {GAP}s apart\n")
     for i, (desc, report) in enumerate(cands):
         n = send_all(devs, report)
         print(f"[{i:02d}] {desc} (sent on {n} iface(s))", flush=True)

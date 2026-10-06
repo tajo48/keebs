@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::lizardguard::LizardGrabber;
 use crate::sc::*;
 use crate::stop::StopFlag;
 use crate::usb::LibusbSession;
@@ -59,6 +60,12 @@ pub struct DeckController {
     lizard_enabled: AtomicBool,
     should_yield: Option<YieldCheck>,
     session: Mutex<Option<LibusbSession>>,
+    /// Kernel-level lizard "off": EVIOCGRAB on the Deck's evdev nodes.
+    /// Lizard stays ENABLED at the firmware level on purpose — disabling it
+    /// kills the firmware's native trackpad haptics (the "they just happen"
+    /// feedback the Python app had). The grab swallows the firmware's
+    /// mouse/keyboard output instead.
+    grabber: Mutex<LizardGrabber>,
 }
 
 impl DeckController {
@@ -76,6 +83,7 @@ impl DeckController {
             lizard_enabled: flag,
             should_yield,
             session: Mutex::new(None),
+            grabber: Mutex::new(LizardGrabber::default()),
         })
     }
 
@@ -94,35 +102,24 @@ impl DeckController {
         }
     }
 
-    fn send_lizard(&self) {
-        let report = if self.lizard_enabled.load(Ordering::SeqCst) {
-            &ENABLE_LIZARD_REPORT
-        } else {
-            &DISABLE_LIZARD_REPORT
-        };
-        let guard = self.session.lock().unwrap();
-        let Some(session) = guard.as_ref() else {
-            return;
-        };
-        if !session.send_feature(report) {
-            eprintln!("deck: lizard SET_REPORT failed");
-        }
-    }
+    // (lizard SET_REPORT sends removed — see the grabber note on the struct:
+    // disabling lizard via feature reports kills the firmware's native
+    // haptics, which is exactly the feedback we want to keep alive.)
 
     // -- control ------------------------------------------------------------
 
+    /// Lizard "toggle" — now implemented as grab/release, NOT a firmware
+    /// write. `enabled=true` (desktop mode) releases the grab so the pads
+    /// drive the desktop mouse again; `false` (OSK owns the controller)
+    /// grabs the nodes so firmware output is swallowed while its native
+    /// haptics keep firing.
     pub fn set_lizard(&self, enabled: bool) {
         self.lizard_enabled.store(enabled, Ordering::SeqCst);
-        if self.session.lock().unwrap().is_none() {
-            return;
-        }
-        self.send_lizard();
-        if !enabled {
-            // Double-tap the disable: the firmware's own re-enable timer
-            // races ours, and two sends back-to-back reliably win the
-            // OSK-open transition (a 50 ms pause costs nothing once).
-            thread::sleep(Duration::from_millis(50));
-            self.send_lizard();
+        let mut grabber = self.grabber.lock().unwrap();
+        if enabled {
+            grabber.release();
+        } else {
+            grabber.engage();
         }
     }
 
@@ -284,7 +281,10 @@ impl DeckController {
         };
         *self.session.lock().unwrap() = Some(session);
         self.opened.store(true, Ordering::SeqCst);
-        self.send_lizard();
+        // NOTE: no lizard SET_REPORT writes — lizard stays ENABLED at the
+        // firmware level so its native trackpad haptics keep working; the
+        // grabber (driven by set_lizard from the manager) handles the
+        // desktop-output suppression.
 
         // Auto-center the sticks: average the first quiet frames. Raw rest
         // offsets were observed up to ~900 on hardware. 30 frames arrive in
@@ -326,13 +326,19 @@ impl DeckController {
                     break;
                 }
             }
+            // Keep the grab engaged while lizard "off" is desired: evdev
+            // nodes can re-appear after a USB blip, so re-engage on the old
+            // lizard-refresh cadence (engage is idempotent).
             let refresh = if self.lizard_enabled.load(Ordering::SeqCst) {
                 LIZARD_REFRESH_ON
             } else {
                 LIZARD_REFRESH_OFF
             };
             if last_lizard.elapsed().as_secs_f32() > refresh {
-                self.send_lizard();
+                let mut grabber = self.grabber.lock().unwrap();
+                if !self.lizard_enabled.load(Ordering::SeqCst) {
+                    grabber.engage();
+                }
                 last_lizard = Instant::now();
             }
 
@@ -349,12 +355,12 @@ impl DeckController {
             }
         }
 
-        // Teardown: restore lizard so the Deck works as a normal mouse/kb
-        // the moment we let go of it, then drop the session (release + close;
+        // Teardown: release the grab so the Deck's firmware mouse/keyboard
+        // flows to the desktop again, then drop the session (release + close;
         // per the Python driver the kernel driver re-binds on process exit).
         self.opened.store(false, Ordering::SeqCst);
         self.lizard_enabled.store(true, Ordering::SeqCst);
-        self.send_lizard();
+        self.grabber.lock().unwrap().release();
         *self.session.lock().unwrap() = None;
     }
 }
