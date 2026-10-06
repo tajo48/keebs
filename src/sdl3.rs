@@ -69,10 +69,19 @@ pub struct SDL_FPoint {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SDL_FColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SDL_Vertex {
     pub position: SDL_FPoint,
-    pub color: SDL_Color,
+    pub color: SDL_FColor,
     pub tex_coord: SDL_FPoint,
 }
 
@@ -407,6 +416,24 @@ type XGetWMHintsFn = unsafe extern "C" fn(*mut c_void, u64) -> *mut XWMHints;
 type XSetWMHintsFn = unsafe extern "C" fn(*mut c_void, u64, *mut XWMHints) -> i32;
 type XFreeFn = unsafe extern "C" fn(*mut c_void);
 type XFlushFn = unsafe extern "C" fn(*mut c_void) -> i32;
+
+/// True if the SDL window is backed by X11/XWayland (display property
+/// present). Used for logging + deciding whether WM hints can apply.
+pub fn window_is_x11(window: SdlWindow) -> bool {
+    let s = sdl();
+    unsafe {
+        let props = (s.get_window_properties)(window);
+        if props == 0 {
+            return false;
+        }
+        let display = (s.get_pointer_property)(
+            props,
+            X11_DISPLAY_PROP.as_ptr() as *const c_char,
+            std::ptr::null_mut(),
+        );
+        !display.is_null()
+    }
+}
 
 /// Best-effort: applies the no-focus WM hints when the SDL window is backed
 /// by X11/XWayland; silently does nothing otherwise (Wayland native).

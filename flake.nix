@@ -14,9 +14,9 @@
       packages = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          # keebs' FFI dlopens the system SDL3 libs by soname, so they must
-          # be on LD_LIBRARY_PATH at runtime (same as the Python sdl3w shim).
-          sdlLibs = [ pkgs.sdl3 pkgs.sdl3-ttf ];
+          # keebs' FFI dlopens the system SDL3 libs and libusb by soname, so
+          # they must be on LD_LIBRARY_PATH at runtime.
+          sdlLibs = [ pkgs.sdl3 pkgs.sdl3-ttf pkgs.libusb1 ];
         in
         {
           keebs = pkgs.rustPlatform.buildRustPackage {

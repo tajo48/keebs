@@ -66,6 +66,9 @@ pub struct DeckController {
     /// /dev/hidraw node that accepted the lizard feature report (the raw
     /// HIDIOCSFEATURE path), remembered so refreshes don't re-scan.
     hidraw_lizard_path: Mutex<Option<String>>,
+    /// libusb session holding the vendor interface — the verified lizard
+    /// disable path (see usb.rs). Preferred over hidapi/hidraw when present.
+    usb: Mutex<Option<crate::usb::LibusbSession>>,
 }
 
 impl DeckController {
@@ -87,6 +90,7 @@ impl DeckController {
             lizard_enabled: AtomicBool::new(passive),
             should_yield,
             hidraw_lizard_path: Mutex::new(None),
+            usb: Mutex::new(None),
         })
     }
 
@@ -102,21 +106,24 @@ impl DeckController {
         } else {
             &DISABLE_LIZARD_REPORT
         };
-        let rc = dev.send_feature_report(report);
-        // The firmware re-enables lizard on its own timer (observed: a
-        // successful disable wears off within seconds — hence the 0.2 s
-        // refresh while we want it OFF). If the hidapi feature-report send
-        // is not reaching the firmware (backend differences vs the Python
-        // libusb setup), fall back to the raw /dev/hidraw HIDIOCSFEATURE
-        // ioctl on the Deck's own nodes.
-        let hidapi_ok = rc.is_ok();
-        if let Err(e) = &rc {
+
+        // Preferred path: the libusb SET_REPORT session — the only transport
+        // verified to actually flip lizard mode on this hardware.
+        {
+            let usb = self.usb.lock().unwrap();
+            if let Some(session) = usb.as_ref() {
+                if session.send_feature(report) {
+                    return;
+                }
+                eprintln!("deck: libusb lizard send failed; falling back");
+            }
+        }
+
+        // Fallbacks: hidapi feature report + raw hidraw ioctl.
+        if let Err(e) = dev.send_feature_report(report) {
             eprintln!("deck: hidapi lizard send failed: {e}");
         }
-        let hidraw_ok = self.send_lizard_hidraw(report);
-        if !enabled && !hidapi_ok && !hidraw_ok {
-            eprintln!("deck: WARNING no lizard disable path worked");
-        }
+        self.send_lizard_hidraw(report);
     }
 
     /// Send the lizard feature report via the kernel hidraw ioctl
@@ -261,6 +268,23 @@ impl DeckController {
         };
         *self.inner.lock().unwrap() = Some(dev);
         self.opened.store(true, Ordering::SeqCst);
+
+        // Hold the vendor interface via libusb for the session: this is the
+        // verified lizard-disable transport (Python deck.py used the pip
+        // hidapi's libusb backend for exactly this). Opening it AFTER the
+        // hidraw read handle keeps our input path alive.
+        {
+            let mut usb = self.usb.lock().unwrap();
+            if usb.is_none() {
+                match crate::usb::LibusbSession::open(VENDOR_ID, PRODUCT_ID_DECK, 2) {
+                    Some(s) => {
+                        println!("deck: libusb session on iface 2 (lizard path)");
+                        *usb = Some(s);
+                    }
+                    None => println!("deck: libusb unavailable; lizard via hidapi/hidraw only"),
+                }
+            }
+        }
         let _ = self.with_dev(|dev| self.send_lizard(dev));
 
         // Auto-center the sticks: average the first quiet frames. Raw rest
@@ -342,9 +366,22 @@ impl DeckController {
         // the moment we let go of it.
         self.opened.store(false, Ordering::SeqCst);
         let dev = self.inner.lock().unwrap().take();
-        if let Some(dev) = dev {
-            self.lizard_enabled.store(true, Ordering::SeqCst);
-            let _ = dev.send_feature_report(&ENABLE_LIZARD_REPORT);
+        self.lizard_enabled.store(true, Ordering::SeqCst);
+        {
+            // Prefer the libusb path for the restore, then drop the session
+            // (release + close) as the very last step.
+            let usb = self.usb.lock().unwrap();
+            match usb.as_ref() {
+                Some(session) => {
+                    session.send_feature(&ENABLE_LIZARD_REPORT);
+                }
+                None => {
+                    if let Some(dev) = &dev {
+                        let _ = dev.send_feature_report(&ENABLE_LIZARD_REPORT);
+                    }
+                }
+            }
         }
+        *self.usb.lock().unwrap() = None;
     }
 }

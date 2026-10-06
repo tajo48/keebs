@@ -9,4 +9,5 @@ pub mod sdl3;
 pub mod stop;
 pub mod triton;
 pub mod uinput;
+pub mod usb;
 pub mod vkb;

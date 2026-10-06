@@ -157,7 +157,23 @@ impl Screen {
             (s.set_window_position)(window, win_x, win_y);
             // X11/XWayland: never take keyboard focus (WM_HINTS.input=False),
             // so clicks/typing keep landing in the app behind the OSK.
-            sdl3::make_window_no_focus(window);
+            let x11 = sdl3::window_is_x11(window);
+            println!(
+                "osk: window backend: {}{}",
+                if x11 {
+                    "x11/xwayland"
+                } else {
+                    "wayland (native — topmost/no-focus unavailable!)"
+                },
+                if x11 {
+                    ""
+                } else {
+                    " — set SDL_VIDEODRIVER=x11"
+                },
+            );
+            if x11 {
+                sdl3::make_window_no_focus(window);
+            }
 
             let renderer = (s.create_renderer)(window, std::ptr::null());
             assert!(
@@ -440,14 +456,16 @@ impl Screen {
     /// Filled circle via SDL_RenderGeometry (triangle fan).
     fn fill_circle(&self, cx: f32, cy: f32, r: f32, color: (u8, u8, u8), alpha: u8) {
         const SEGMENTS: usize = 28;
+        // SDL3 vertex colors are float RGBA (SDL_FColor), not bytes.
+        let fcolor = sdl3::SDL_FColor {
+            r: color.0 as f32 / 255.0,
+            g: color.1 as f32 / 255.0,
+            b: color.2 as f32 / 255.0,
+            a: alpha as f32 / 255.0,
+        };
         let vtx = |x: f32, y: f32| sdl3::SDL_Vertex {
             position: sdl3::SDL_FPoint { x, y },
-            color: sdl3::SDL_Color {
-                r: color.0,
-                g: color.1,
-                b: color.2,
-                a: alpha,
-            },
+            color: fcolor,
             tex_coord: sdl3::SDL_FPoint { x: 0.0, y: 0.0 },
         };
         let mut verts = Vec::with_capacity(SEGMENTS + 2);
