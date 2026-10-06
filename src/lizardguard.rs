@@ -46,7 +46,7 @@ fn deck_event_nodes() -> Vec<String> {
             match (vid, pid) {
                 (Ok(v), Ok(p)) => {
                     if v.trim().eq_ignore_ascii_case(VID) && p.trim().eq_ignore_ascii_case(PID) {
-                        out.push(format!("/dev/{name}"));
+                        out.push(format!("/dev/input/{name}"));
                     }
                     break;
                 }
@@ -77,20 +77,20 @@ impl LizardGrabber {
         if !self.fds.is_empty() {
             return self.fds.len();
         }
-        let mut warned = false;
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         for path in deck_event_nodes() {
             let Ok(c) = CString::new(path.clone()) else {
                 continue;
             };
             let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK) };
             if fd < 0 {
-                if !warned {
-                    warned = true;
+                if !WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
                     eprintln!(
-                        "lizardguard: cannot grab {path} — fix once with: \
+                        "lizardguard: cannot open {path}: {} — fix once with: \
                          sudo usermod -aG input $USER then log out/in \
                          (until then the Deck pads move the desktop mouse \
-                         while the keyboard is open)"
+                         while the keyboard is open)",
+                        std::io::Error::last_os_error()
                     );
                 }
                 continue;
