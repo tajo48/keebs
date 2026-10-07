@@ -745,15 +745,18 @@ enum Kind {
     Classic,
 }
 
-/// A frame counts as "in use" ONLY by its button/touch BITS (minus the
-/// always-on paddle REST bits). Analog axes are deliberately excluded: the
-/// SC 2026 has no rest normalization guarantees (untouched pads/sticks can
-/// rest far from 0, and a garbage dongle slot can stream junk forever), and
-/// any axis-based predicate made the first streamer permanently "active",
-/// locking out every other controller. Touching a pad sets a touch bit, so
-/// pick-up always registers.
+/// A frame counts as "in use" ONLY by REAL user intent: any button minus
+/// the firmware-emulation noise bits. LGRIP_REST/RGRIP_REST are paddle-rest
+/// flags; LPADJOY_TOUCH/RPADJOY_TOUCH are the LIZARD joystick-emulation
+/// touch flags that flip ON THEIR OWN while a controller sits in desktop
+/// mode — one such bit stole the active slot mid-session (log: activation
+/// buttons=0x31000000) and, never idling, starved the other controller
+/// ("dead Deck pad after close"). Analog axes stay excluded too (rest
+/// offsets / garbage slots). Real intent = real buttons + LPADTOUCH/
+/// RPADTOUCH pad-touch bits.
 fn frame_has_activity(s: &SciInput) -> bool {
-    s.buttons & !(btn::LGRIP_REST | btn::RGRIP_REST) != 0
+    const NOISE: u32 = btn::LGRIP_REST | btn::RGRIP_REST | btn::LPADJOY_TOUCH | btn::RPADJOY_TOUCH;
+    s.buttons & !NOISE != 0
 }
 
 struct Reg {
