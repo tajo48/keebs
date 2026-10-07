@@ -883,7 +883,11 @@ fn activate(
     if let Some(a) = *active
         && let Some((_, old)) = registry.iter().find(|(k, _)| *k == a)
     {
-        old.dev.set_lizard(true);
+        // Demoted device follows the global posture: lizard ON only when the
+        // OSK is hidden (visible -> OFF, same rule the supervision tick
+        // enforces for inactive devices — its firmware mouse must not fight
+        // the open keyboard).
+        old.dev.set_lizard(!state.is_visible());
     }
     manager.reset_for_device_switch(state, seed);
     let dev = new.dev.clone();
@@ -995,6 +999,18 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                     ));
                     r.frames = 0;
                     r.activity_frames = 0;
+                }
+            }
+
+            // INACTIVE devices' lizard policy: OFF while the OSK is visible
+            // (an idle controller's firmware mouse fights the keyboard —
+            // "SC moves the mouse while I type on the Deck"), ON when hidden
+            // (desktop posture for everyone). The manager's per-frame policy
+            // keeps owning the ACTIVE device; this tick owns the rest.
+            let vis = state.is_visible();
+            for (k, r) in registry.iter() {
+                if Some(*k) != active {
+                    r.dev.set_lizard(!vis);
                 }
             }
 

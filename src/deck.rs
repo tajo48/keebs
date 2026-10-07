@@ -131,35 +131,29 @@ impl DeckController {
 
     // -- haptics (best-effort; unverified on Deck firmware) ------------------
 
+    /// Single-channel haptic write (see the comment inside for why the
+    /// original multi-channel shotgun was removed).
     fn write_report(&self, report: &[u8; 65]) -> bool {
         let guard = self.session.lock().unwrap();
         let Some(s) = guard.as_ref() else {
             return false;
         };
-        // The Python deck driver's triple-channel `_send_haptic`, plus the
-        // wire shapes its pip-hidapi libusb backend actually put on the wire:
-        //   1. interrupt OUT, 65 B (id included)
-        //   2. interrupt OUT, 64 B (unnumbered variant)
-        //   3. SET_REPORT OUTPUT, clean 64 B body
-        //   4. SET_REPORT OUTPUT, 65 B payload with the ID duplicated
-        //      (hidapi-libusb's quirk — the shape lizard disable rode)
-        //   5. SET_REPORT FEATURE, 65 B payload with the ID duplicated
-        // A duplicate is benign (same tone restarted) — we can't detect
-        // which channel the firmware honors, so try them all, Python-style.
-        let r1 = s.write(report);
-        let r2 = s.write(&report[..64]);
-        let r3 = s.control_output(report[0], &report[1..]);
-        let r4 = s.control_output_dup(report[0], report);
-        let r5 = s.control_feature_dup(report[0], report);
+        // ONE control transfer. The original 5-channel shotgun (two interrupt
+        // OUT writes + three control variants) stalled the shared USB session
+        // for up to seconds per haptic: the interrupt writes FAIL on this
+        // firmware (observed live: int65=false int64=false) and every failed/
+        // redundant write contends the session mutex the 250 Hz read loop
+        // needs — read as extreme typing lag and GONE misfires. The clean
+        // SET_REPORT OUTPUT (report id in wValue, 64 B body) is the channel
+        // the firmware demonstrably honors (out64=true).
+        let ok = s.control_output(report[0], &report[1..]);
         {
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| {
-                println!(
-                    "deck: haptic write channels int65={r1} int64={r2} out64={r3} outDup65={r4} featDup65={r5}"
-                );
+                diag::log("deck: haptic channel: SET_REPORT OUTPUT (single write)");
             });
         }
-        r1 || r2 || r3 || r4 || r5
+        ok
     }
 
     pub fn haptic_tone(&self, actuator: u8, freq_hz: u32, gain: i8, count: u16) -> bool {
