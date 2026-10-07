@@ -25,15 +25,15 @@ font); it also listens for the mouse in case you want to click-type:
 
 | input | action |
 |-------|--------|
-| **Steam + X** | open the OSK |
-| **B** / **R5** (right lower paddle) / Steam released alone | close the OSK |
+| **Steam** (press) | open the OSK |
+| **B** / **R5** (right lower paddle) | close the OSK |
 | **left stick / D-pad** | move the key cursor (tap = 1 key, hold = repeat) |
 | **A** | press the key under the cursor |
 | **X** | Backspace (hold to repeat) |
 | **Y** | Space |
 | **L4** (left upper paddle) | hold **Ctrl** |
 | **L5** (left lower paddle) | hold **AltGr** (Polish ą/ę/ś…) |
-| **R4** (right upper paddle) | hold **Win** |
+| **R4** (right upper paddle) | hold **Shift** |
 | **trackpad touch** | move the pointer; **pad click** / L2/R2 while touched presses the key under it |
 | **right stick** | move the system mouse (point-and-click keys) |
 | **Steam + left stick** | volume / prev-next track |

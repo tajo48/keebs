@@ -214,6 +214,7 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
         vec![
             KeyDef {
                 glyph: Some("\u{21E7}"), // ⇧
+                hint: Some("R4"),
                 ..mod_key(
                     "Shift",
                     K::KEY_LEFTSHIFT,
@@ -277,7 +278,6 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
                 )
             },
             KeyDef {
-                hint: Some("R4"),
                 ..mod_key(
                     "Win",
                     K::KEY_LEFTMETA,
@@ -318,7 +318,7 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
             KeyDef {
                 glyph: Some("\u{2328}"), // ⌨
-                hint: Some("B / R5"),
+                hint: Some("B/R5"),
                 ..mod_key("Close", 0, Behavior::Move, 1.4, Align::Center, Top)
             },
         ],

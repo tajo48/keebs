@@ -440,6 +440,7 @@ impl Screen {
             }
 
             // Controller-button hint ("X", "R2", …) — small, grey, top-right.
+            // Kept TINY so it never fights the key's own label/glyph.
             if let Some(hint) = kd.hint {
                 self.draw_label(
                     hint,
@@ -448,7 +449,7 @@ impl Screen {
                     SHADOW_LABEL,
                     Align::Right,
                     VAlign::Top,
-                    18.0,
+                    14.0,
                 );
             }
         }
@@ -467,11 +468,11 @@ impl Screen {
             } else {
                 (POINTER_DOT, 255u8)
             };
-            // Catppuccin Frappé blue (#8caaee) rim: outer blue disc, inner
-            // green disc — a solid blue border around the opaque green dot.
+            // Catppuccin Frappé blue (#8caaee) INNER dot: solid green disc
+            // with a smaller blue core (user preference: blue inside).
             const FRAPPE_BLUE: (u8, u8, u8) = (0x8C, 0xAA, 0xEE);
-            self.fill_circle(cx, cy, 13.0, FRAPPE_BLUE, 255);
-            self.fill_circle(cx, cy, 10.0, color, alpha);
+            self.fill_circle(cx, cy, 13.0, color, alpha);
+            self.fill_circle(cx, cy, 5.5, FRAPPE_BLUE, 255);
         }
 
         unsafe {

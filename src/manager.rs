@@ -28,9 +28,6 @@ const STICK_VOL_REPEAT: f32 = 0.021;
 const KBD_STICK_HOLD_DELAY: f32 = 0.35;
 const KBD_STICK_REPEAT: f32 = 0.15;
 const KBD_STICK_DEADZONE: f32 = STICK_DEADZONE * 1.32;
-/// Grace window after the OSK opens during which a Steam release is NOT a
-/// close gesture (covers the HID handoff blip).
-const OPEN_CLOSE_GRACE: f32 = 1.0;
 /// Right-stick mouse constants (controller.py).
 const MOUSE_SPEED: f32 = 800.0;
 const MOUSE_DEADZONE: f32 = 5000.0;
@@ -168,10 +165,10 @@ pub struct ControllerManager {
     open_tick_pending: bool,
     lizard_asserted_on: Option<bool>,
     last_lizard_assert: Instant,
-    /// Back-paddle hold-modifiers (user mapping): L4=Ctrl, L5=AltGr, R4=Win.
+    /// Back-paddle hold-modifiers (user mapping): L4=Ctrl, L5=AltGr, R4=Shift.
     ctrl_held: bool,
     altgr_held: bool,
-    win_held: bool,
+    shift_held: bool,
     /// R5 (right lower paddle) rising edge closes the keyboard.
     r5_was_pressed: bool,
     mouse_l_active: bool,
@@ -217,7 +214,7 @@ impl ControllerManager {
             last_lizard_assert: Instant::now(),
             ctrl_held: false,
             altgr_held: false,
-            win_held: false,
+            shift_held: false,
             r5_was_pressed: false,
             mouse_l_active: false,
             mouse_r_active: false,
@@ -240,7 +237,7 @@ impl ControllerManager {
         self.kb.release_code(K::KEY_LEFTMETA);
         self.ctrl_held = false;
         self.altgr_held = false;
-        self.win_held = false;
+        self.shift_held = false;
         state.set_ctrl_latched(false);
         state.set_alt_latched(false);
         state.set_altgr_latched(false);
@@ -257,14 +254,14 @@ impl ControllerManager {
     }
 
     /// Re-seed every edge latch for a switch of the active device (see
-    /// `input_thread`). Seeded FROM THE ACTIVATING FRAME: `steam_was_pressed`
-    /// mirrors its Steam/QAM bit, and `saw_x_during_steam` is ALWAYS false —
-    /// seeding it true swallowed the very first Steam+X chord after every
-    /// pickup (the activation itself is triggered by the Steam press, so
-    //  "chord already handled" was a lie — X hadn't happened yet).
-    pub fn reset_for_device_switch(&mut self, state: &OskState, seed: &SciInput) {
+    /// `input_thread`). `steam_was_pressed` seeds FALSE on purpose: Steam's
+    /// rising edge now OPENS the keyboard, and the activation itself is
+    /// usually triggered by that same Steam press — seeding true would
+    /// swallow the opening press (same class of bug as the old swallowed
+    /// Steam+X chord).
+    pub fn reset_for_device_switch(&mut self, state: &OskState) {
         self.release_held(state);
-        self.steam_was_pressed = seed.buttons & (btn::STEAM | btn::QAM) != 0;
+        self.steam_was_pressed = false;
         self.saw_x_during_steam = false;
         self.open_t = Instant::now();
         self.l3_was_pressed = false;
@@ -288,7 +285,7 @@ impl ControllerManager {
         self.lizard_asserted_on = None;
         self.ctrl_held = false;
         self.altgr_held = false;
-        self.win_held = false;
+        self.shift_held = false;
         self.r5_was_pressed = false;
         self.mouse_acc_x = 0.0;
         self.mouse_acc_y = 0.0;
@@ -368,9 +365,9 @@ impl ControllerManager {
         self.rt_prev = rt_pressed;
 
         // Back paddles (user mapping): L4 = Ctrl hold, L5 = AltGr hold
-        // (Polish diacritics!), R4 = Win hold — same hold mechanic as the old
-        // L2 shift (press on rising edge, release on falling) — and R5 closes
-        // the keyboard.
+        // (Polish diacritics!), R4 = Shift hold — same hold mechanic as the
+        // old L2 shift (press on rising edge, release on falling) — and R5
+        // closes the keyboard.
         let l4 = b.buttons & btn::LGRIP1 != 0;
         let l5 = b.buttons & btn::LGRIP2 != 0;
         let r4 = b.buttons & btn::RGRIP1 != 0;
@@ -389,12 +386,12 @@ impl ControllerManager {
             self.kb.release_code(K::KEY_RIGHTALT);
             self.altgr_held = false;
         }
-        if r4 && !self.win_held {
-            self.kb.press_code(K::KEY_LEFTMETA);
-            self.win_held = true;
-        } else if !r4 && self.win_held {
-            self.kb.release_code(K::KEY_LEFTMETA);
-            self.win_held = false;
+        if r4 && !self.shift_held {
+            self.kb.press_code(K::KEY_LEFTSHIFT);
+            self.shift_held = true;
+        } else if !r4 && self.shift_held {
+            self.kb.release_code(K::KEY_LEFTSHIFT);
+            self.shift_held = false;
         }
         if r5 && !self.r5_was_pressed {
             state.close();
@@ -408,9 +405,8 @@ impl ControllerManager {
         }
         self.b_was_pressed = b_pressed;
 
-        // Mirror Shift state to the renderer (mouse latch only — the L2
-        // shift role is gone; the OSK Shift key latch drives the glyphs).
-        state.set_shift_held(state.is_shift_latched());
+        // Mirror Shift state to the renderer (latch + R4 paddle hold).
+        state.set_shift_held(state.is_shift_latched() || self.shift_held);
 
         // DPAD steps the cursor (queued; main loop knows pixel layout).
         let dpad_mask = btn::DPAD_UP | btn::DPAD_DOWN | btn::DPAD_LEFT | btn::DPAD_RIGHT;
@@ -449,7 +445,7 @@ impl ControllerManager {
 
         // Visual highlight: paint keys whose bound button is held.
         let mut highlights = std::collections::HashSet::new();
-        if state.is_shift_latched() {
+        if state.is_shift_latched() || self.shift_held {
             highlights.insert(K::KEY_LEFTSHIFT);
             highlights.insert(K::KEY_RIGHTSHIFT);
         }
@@ -462,7 +458,7 @@ impl ControllerManager {
         if state.is_altgr_latched() || self.altgr_held {
             highlights.insert(K::KEY_RIGHTALT);
         }
-        if state.is_win_latched() || self.win_held {
+        if state.is_win_latched() {
             highlights.insert(K::KEY_LEFTMETA);
         }
         // Caps glows while ACTUALLY latched on (same source that flips the
@@ -480,15 +476,14 @@ impl ControllerManager {
         }
         state.set_highlighted(highlights);
 
-        // Steam+X opens the keyboard; Steam released alone closes it.
+        // Steam + X opens the keyboard; Steam released alone closes it.
         let x_now = b.buttons & btn::X != 0;
         if steam_now && !self.steam_was_pressed {
-            self.saw_x_during_steam = false;
-        }
-        if steam_now && x_now && !self.saw_x_during_steam {
-            self.saw_x_during_steam = true;
+            // Steam ALONE opens (user mapping) — rising edge shows the OSK.
             state.show();
+            self.saw_x_during_steam = true;
         }
+        let _ = x_now;
 
         // Lizard policy (the "cursor goes back when the keyboard closes"
         // behavior): the OSK owns the controller while visible -> firmware
@@ -546,15 +541,6 @@ impl ControllerManager {
         if !steam_now && self.alt_held_for_tab {
             self.kb.release_code(K::KEY_LEFTALT);
             self.alt_held_for_tab = false;
-        }
-
-        // Steam released alone -> close (past the grace window).
-        if self.steam_was_pressed
-            && !steam_now
-            && !self.saw_x_during_steam
-            && now.duration_since(self.open_t).as_secs_f32() > OPEN_CLOSE_GRACE
-        {
-            state.close();
         }
         self.steam_was_pressed = steam_now;
 
@@ -955,7 +941,6 @@ fn activate(
     registry: &[(Kind, Reg)],
     active: &mut Option<Kind>,
     kind: Kind,
-    seed: &SciInput,
 ) {
     let Some((_, new)) = registry.iter().find(|(k, _)| *k == kind) else {
         return;
@@ -969,7 +954,7 @@ fn activate(
         // the open keyboard).
         old.dev.set_lizard(!state.is_visible());
     }
-    manager.reset_for_device_switch(state, seed);
+    manager.reset_for_device_switch(state);
     let dev = new.dev.clone();
     state.set_haptic_tick(Arc::new(move || {
         let dev = dev.clone();
@@ -1129,9 +1114,7 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                     .iter()
                     .find(|(k, r)| *k != a && r.last_frame.elapsed() < GONE)
                 {
-                    Some((k, _)) => {
-                        activate(&mut manager, &state, &registry, &mut active, *k, &SCI_NULL)
-                    }
+                    Some((k, _)) => activate(&mut manager, &state, &registry, &mut active, *k),
                     None => {
                         active = None;
                         manager.release_held(&state);
@@ -1191,7 +1174,7 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                             sci.rstick_x,
                             sci.rstick_y
                         ));
-                        activate(&mut manager, &state, &registry, &mut active, kind, &sci);
+                        activate(&mut manager, &state, &registry, &mut active, kind);
                     }
                 }
                 Some(a) if a == kind => {
@@ -1239,7 +1222,7 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                         .map(|(_, r)| r.last_active.elapsed() > SWITCH_IDLE)
                         .unwrap_or(true);
                     if frame_has_activity(&sci) && active_idle {
-                        activate(&mut manager, &state, &registry, &mut active, kind, &sci);
+                        activate(&mut manager, &state, &registry, &mut active, kind);
                     }
                 }
             }
