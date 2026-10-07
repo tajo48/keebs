@@ -16,6 +16,7 @@ use crate::deck::DeckController;
 use crate::diag;
 use crate::events::EventMapper;
 use crate::osk_state::{Dir, InputState, OskState, Pointer};
+use crate::sc::{HAPTIC_PAD_LEFT, HAPTIC_PAD_RIGHT};
 use crate::sc::{SCI_NULL, SciInput, buttons as btn};
 use crate::triton::SteamController;
 use crate::uinput::{Keyboard, Mouse, keys as K};
@@ -93,10 +94,16 @@ impl Device {
                 // Instant-by-construction: count 4 (~8 ms at 500 Hz) keeps
                 // the burst a sharp POP; loudness comes from the HIGH gain,
                 // NOT a longer burst (count 12 smeared the click into a
-                // delayed buzz — "needs to be instant").
-                let (f, g, c, ms) = env_quad("KEEBS_SC_PADCLICK", [500, 8, 4, 14]);
+                // delayed buzz — "needs to be instant"). Raw haptic_tone on
+                // both actuators — NO safety-stop thread: the burst
+                // self-expires in ~8 ms, and the 14 ms 0x82 stop report was
+                // itself felt as a second tiny tick right after the pop.
+                let (f, g, c, _ms) = env_quad("KEEBS_SC_PADCLICK", [500, 8, 4, 14]);
                 let sc = Arc::clone(sc);
-                std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
+                std::thread::spawn(move || {
+                    sc.haptic_tone(HAPTIC_PAD_LEFT, f, g, c);
+                    sc.haptic_tone(HAPTIC_PAD_RIGHT, f, g, c);
+                });
             }
             Device::Deck(d) => {
                 let d = Arc::clone(d);
