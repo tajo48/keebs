@@ -439,18 +439,12 @@ impl Screen {
                 self.draw_symbol(glyph, &key, text_color, ga, gv);
             }
 
-            // Controller-button hint ("X", "R2", …) — small, grey, top-right.
-            // Kept TINY so it never fights the key's own label/glyph.
+            // Controller-button hint ("X", "R4", …) — tiny, grey, TOP-LEFT
+            // corner: the only corner no key's label or glyph ever occupies
+            // (labels sit bottom/center, glyphs center/right), so the hint
+            // never fights the key's own content.
             if let Some(hint) = kd.hint {
-                self.draw_label(
-                    hint,
-                    kd,
-                    &key,
-                    SHADOW_LABEL,
-                    Align::Right,
-                    VAlign::Top,
-                    14.0,
-                );
+                self.draw_label(hint, kd, &key, SHADOW_LABEL, Align::Left, VAlign::Top, 14.0);
             }
         }
 

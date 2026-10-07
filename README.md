@@ -26,7 +26,8 @@ font); it also listens for the mouse in case you want to click-type:
 | input | action |
 |-------|--------|
 | **Steam** (press) | open the OSK |
-| **B** / **R5** (right lower paddle) | close the OSK |
+| **B** | close the OSK |
+| **R5** (right lower paddle) | toggle: open when closed, close when open |
 | **left stick / D-pad** | move the key cursor (tap = 1 key, hold = repeat) |
 | **A** | press the key under the cursor |
 | **X** | Backspace (hold to repeat) |

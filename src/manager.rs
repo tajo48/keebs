@@ -73,7 +73,7 @@ impl Device {
     pub fn haptic_tick(&self) {
         match self {
             Device::Triton(sc) => {
-                let (f, g, c, ms) = env_quad("KEEBS_SC_TICK", [550, -2, 6, 20]);
+                let (f, g, c, ms) = env_quad("KEEBS_SC_TICK", [550, -6, 5, 18]);
                 let sc = Arc::clone(sc);
                 std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
             }
@@ -394,7 +394,12 @@ impl ControllerManager {
             self.shift_held = false;
         }
         if r5 && !self.r5_was_pressed {
-            state.close();
+            // R5 toggles: close when open, OPEN when closed (user mapping).
+            if state.is_visible() {
+                state.close();
+            } else {
+                state.show();
+            }
         }
         self.r5_was_pressed = r5;
 

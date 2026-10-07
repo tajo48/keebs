@@ -9,10 +9,10 @@ use crate::osk_state::{Dir, OskState};
 use crate::uinput::{Keyboard, keys as K};
 
 // Hold-to-repeat cadence shared by EVERY "press a key" input path —
-// matches a standard Linux keyboard (X defaults: 500 ms initial delay,
-// ~30 cps repeat rate).
-pub const KEY_REPEAT_DELAY: f32 = 0.5;
-pub const KEY_REPEAT_INTERVAL: f32 = 1.0 / 30.0;
+// 2x faster than the original Python feel (user preference): 200 ms
+// initial delay, 10 cps repeat.
+pub const KEY_REPEAT_DELAY: f32 = 0.2;
+pub const KEY_REPEAT_INTERVAL: f32 = 0.1;
 
 const PADDING_INNER: f32 = 3.0;
 const PADDING_OUTER: f32 = 2.0;
