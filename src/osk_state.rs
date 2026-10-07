@@ -76,7 +76,6 @@ pub struct OskState {
     win_latched: AtomicBool,
     emoji_open: AtomicBool,
     /// Cached Caps Lock state — the live X11 query is a synchronous
-    /// round-trip and must never run per render frame (it stalled typing).
     /// Refreshed on a slow tick and whenever CapsLock is injected.
     caps_on: AtomicBool,
     highlighted: Mutex<HashSet<u16>>,
@@ -184,10 +183,34 @@ impl OskState {
     }
     /// Re-read Caps Lock from the X server's modifier mask. Called on the
     /// slow tick (~4 Hz) and right after a CapsLock injection, never per
-    /// frame — the X query is a blocking round-trip.
+    /// frame. Prefers the PHYSICAL capslock LEDs (sysfs) — the X modifier
+    /// mask via XQueryPointer proved unreliable on XWayland (glow desynced
+    /// from actual letter case); falls back to the X mask when no LED nodes
+    /// are readable.
     pub fn refresh_caps(&self) {
-        self.caps_on
-            .store(crate::sdl3::x11_caps_on(), Ordering::SeqCst);
+        let led = (|| {
+            let dir = std::fs::read_dir("/sys/class/leds").ok()?;
+            let mut saw = false;
+            let mut on = false;
+            for e in dir.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !name.contains("capslock") {
+                    continue;
+                }
+                let Ok(b) = std::fs::read_to_string(e.path().join("brightness")) else {
+                    continue;
+                };
+                saw = true;
+                if b.trim() != "0" {
+                    on = true;
+                }
+            }
+            saw.then_some(on)
+        })();
+        self.caps_on.store(
+            led.unwrap_or_else(crate::sdl3::x11_caps_on),
+            Ordering::SeqCst,
+        );
     }
     pub fn is_emoji_open(&self) -> bool {
         self.emoji_open.load(Ordering::SeqCst)

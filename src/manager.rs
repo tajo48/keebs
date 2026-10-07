@@ -172,6 +172,8 @@ pub struct ControllerManager {
     last_lizard_assert: Instant,
     shift_active: bool,
     enter_active: bool,
+    /// Next auto-repeat fire for the R2-Enter tap.
+    enter_repeat_at: Option<Instant>,
     mouse_l_active: bool,
     mouse_r_active: bool,
     mouse_acc_x: f32,
@@ -228,6 +230,7 @@ impl ControllerManager {
             last_lizard_assert: Instant::now(),
             shift_active: false,
             enter_active: false,
+            enter_repeat_at: None,
             mouse_l_active: false,
             mouse_r_active: false,
             mouse_acc_x: 0.0,
@@ -296,6 +299,7 @@ impl ControllerManager {
         self.lizard_asserted_on = None;
         self.shift_active = false;
         self.enter_active = false;
+        self.enter_repeat_at = None;
         self.mouse_acc_x = 0.0;
         self.mouse_acc_y = 0.0;
         self.mouse_last_t = None;
@@ -363,19 +367,19 @@ impl ControllerManager {
         let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
         state.set_pad_touched(lpad_touched, rpad_touched);
 
-        // R2: right pad touched -> key press (pad path); else -> Enter hold.
-        // Computed BEFORE the Shift hold below: Enter must never ride along
-        // with a held Shift (apps read Shift+Enter — chat clients turn it
-        // into a newline instead of send, which read as "enter is broken").
+        // R2: right pad touched -> key press (pad path); else -> Enter as a
+        // TAP with hold-to-repeat. The old press-and-hold-until-release model
+        // held KEY_ENTER down for as long as the trigger lasted — apps'
+        // auto-repeat turned that into a burst of newlines/sends (read as
+        // "enter acts like shift-enter"). A tap behaves exactly like a real
+        // keyboard; modifiers are dropped first so it can never ride along
+        // as Shift/Ctrl/Alt/AltGr/Win+Enter.
         let rt_pressed = self.trigger_pressed(b, btn::RT, b.rtrig as i32);
         let rt_was = self.rt_prev;
         self.rt_prev = rt_pressed;
         let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
-        let enter_should_hold = rt_pressed && !rpad_touched;
-        if enter_should_hold && !self.enter_active {
-            // Enter must arrive CLEAN: any sticky modifier riding along turns
-            // it into Shift/Ctrl/Alt/AltGr/Win+Enter — newline in chat apps,
-            // submit/submit-elsewhere, fullscreen toggles. Drop them all.
+        let enter_active = rt_pressed && !rpad_touched;
+        if enter_active && !rt_was {
             if state.is_shift_latched() {
                 state.set_shift_latched(false);
                 state.set_shift_held(false);
@@ -398,13 +402,14 @@ impl ControllerManager {
                 state.set_win_latched(false);
                 self.kb.release_code(K::KEY_LEFTMETA);
             }
-            self.kb.press_code(K::KEY_ENTER);
-            self.enter_active = true;
+            self.kb.tap_code(K::KEY_ENTER);
+            self.enter_repeat_at = Some(now + Duration::from_secs_f32(vkb::KEY_REPEAT_DELAY));
             dev.pad_click_haptic();
-        } else if !enter_should_hold && self.enter_active {
-            self.kb.release_code(K::KEY_ENTER);
-            self.enter_active = false;
+        } else if enter_active && self.enter_repeat_at.map(|t| now >= t).unwrap_or(true) {
+            self.kb.tap_code(K::KEY_ENTER);
+            self.enter_repeat_at = Some(now + Duration::from_secs_f32(vkb::KEY_REPEAT_INTERVAL));
         }
+        self.enter_active = enter_active;
 
         // L2 role, fixed at press: pad touched -> "click"; else -> "shift".
         let lt_pressed = self.trigger_pressed(b, btn::LT, b.ltrig as i32);
@@ -420,9 +425,8 @@ impl ControllerManager {
         }
         self.lt_prev = lt_pressed;
 
-        // Shift hold — suppressed while Enter is held (see above).
-        let shift_should_hold =
-            lt_pressed && self.lt_role == Some(Role::Shift) && !enter_should_hold;
+        // Shift hold — suppressed while the R2-Enter role is engaged.
+        let shift_should_hold = lt_pressed && self.lt_role == Some(Role::Shift) && !enter_active;
         if shift_should_hold && !self.shift_active {
             self.kb.press_code(K::KEY_LEFTSHIFT);
             self.shift_active = true;
@@ -831,7 +835,7 @@ fn pad_gain() -> f32 {
             .ok()
             .and_then(|s| s.trim().parse::<f32>().ok())
             .filter(|v| (0.05..=20.0).contains(v))
-            .unwrap_or(1.3)
+            .unwrap_or(1.1)
     })
 }
 

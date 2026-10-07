@@ -52,7 +52,7 @@ whenever Enter is sent, so Enter never arrives as Shift/Ctrl/Alt/Win+Enter.
 
 | Variable | Default | What |
 |---|---|---|
-| `KEEBS_PAD_GAIN` | `1.3` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
+| `KEEBS_PAD_GAIN` | `1.1` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
 | `KEEBS_SC_TICK` | `550,-6,5,18` | SC 2026 UI tick: `freq,gain,count,ms` (gain −127..127, higher = louder) |
 | `KEEBS_SC_PADCLICK` | `550,-5,6,18` | SC 2026 pad-click buzz, same format |
 
