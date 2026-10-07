@@ -16,7 +16,6 @@ use crate::deck::DeckController;
 use crate::diag;
 use crate::events::EventMapper;
 use crate::osk_state::{Dir, InputState, OskState, Pointer};
-use crate::sc::{HAPTIC_PAD_LEFT, HAPTIC_PAD_RIGHT};
 use crate::sc::{SCI_NULL, SciInput, buttons as btn};
 use crate::triton::SteamController;
 use crate::uinput::{Keyboard, Mouse, keys as K};
@@ -70,7 +69,8 @@ impl Device {
     /// Light UI tick (both pads, short burst). ALL devices: the Deck's
     /// SET_REPORT control transfer must never run on the input thread (it
     /// contends the USB session the 250 Hz reader needs — that was the
-    /// typing lag).
+    /// typing lag). This is the ONLY haptic left: the pad-click pop was
+    /// removed entirely at the user's request (no click feedback).
     pub fn haptic_tick(&self) {
         match self {
             Device::Triton(sc) => {
@@ -84,34 +84,6 @@ impl Device {
             }
             // Classic 2015: no-op (0x8F singer report uncalibrated).
             Device::Classic(c) => c.haptic_click(550, -6, 5),
-        }
-    }
-
-    /// Stronger pad-click tick — threaded for the same reason as above.
-    pub fn pad_click_haptic(&self) {
-        match self {
-            Device::Triton(sc) => {
-                // Instant-by-construction: count 4 (~8 ms at 500 Hz) keeps
-                // the burst a sharp POP; loudness comes from the HIGH gain,
-                // NOT a longer burst (count 12 smeared the click into a
-                // delayed buzz — "needs to be instant"). Raw haptic_tone on
-                // both actuators — NO safety-stop thread: the burst
-                // self-expires in ~8 ms, and the 14 ms 0x82 stop report was
-                // itself felt as a second tiny tick right after the pop.
-                let (f, g, c, _ms) = env_quad("KEEBS_SC_PADCLICK", [500, 8, 4, 14]);
-                let sc = Arc::clone(sc);
-                std::thread::spawn(move || {
-                    sc.haptic_tone(HAPTIC_PAD_LEFT, f, g, c);
-                    sc.haptic_tone(HAPTIC_PAD_RIGHT, f, g, c);
-                });
-            }
-            Device::Deck(d) => {
-                let d = Arc::clone(d);
-                std::thread::spawn(move || d.haptic_pad_click());
-            }
-            Device::Classic(c) => {
-                c.haptic_pad_click();
-            }
         }
     }
 }
@@ -631,7 +603,7 @@ impl ControllerManager {
     fn handle_pad_input(
         &mut self,
         state: &OskState,
-        dev: &Device,
+        _dev: &Device,
         b: &SciInput,
         coords: (f32, f32),
         touch_mask: u32,
@@ -663,7 +635,6 @@ impl ControllerManager {
         };
         if trigger_edge || pad_edge {
             state.queue_click(state.abs_to_frac(coords.0, coords.1), false);
-            dev.pad_click_haptic();
             *repeat_at = Some(now + Duration::from_secs_f32(vkb::KEY_REPEAT_DELAY));
         } else if click_active {
             let due = match *repeat_at {
