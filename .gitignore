@@ -1,0 +1,7 @@
+/target
+/result
+keebs-diag.log
+
+# Vendored reference trees (embedded git repos — reference material only,
+# not build inputs; would clone as broken gitlinks).
+/helpers/

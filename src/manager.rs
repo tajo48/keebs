@@ -48,39 +48,56 @@ pub enum Device {
 }
 
 impl Device {
+    /// Lizard toggle. USB-writing devices (Triton/classic feature reports)
+    /// run on a THROWAWAY THREAD: the write can block on the reader's device
+    /// mutex for a full read cycle and the firmware can take its time — done
+    /// inline (input thread), it stalled the frame pipeline >1.5 s and
+    /// false-fired the GONE handover mid-typing (observed: repeated spurious
+    /// re-activations = full manager reset per keystroke burst). The Deck's
+    /// toggle is local (evdev grabs) and stays synchronous.
     fn set_lizard(&self, enabled: bool) {
         match self {
-            Device::Triton(sc) => sc.set_lizard(enabled),
+            Device::Triton(sc) => {
+                let sc = Arc::clone(sc);
+                std::thread::spawn(move || sc.set_lizard(enabled));
+            }
             Device::Deck(d) => d.set_lizard(enabled),
-            Device::Classic(c) => c.set_lizard(enabled),
+            Device::Classic(c) => {
+                let c = Arc::clone(c);
+                std::thread::spawn(move || c.set_lizard(enabled));
+            }
         }
     }
 
-    /// Light UI tick (both pads, short burst).
+    /// Light UI tick (both pads, short burst). ALL devices: the Deck's
+    /// SET_REPORT control transfer must never run on the input thread (it
+    /// contends the USB session the 250 Hz reader needs — that was the
+    /// typing lag).
     pub fn haptic_tick(&self) {
         match self {
             Device::Triton(sc) => {
-                sc.haptic_click(550, -6, 5, 18);
+                let sc = Arc::clone(sc);
+                std::thread::spawn(move || sc.haptic_click(550, -6, 5, 18));
             }
-            // Deck: 0x83 trackpad tones (the Python driver's only mechanism);
-            // native firmware haptics ride on top via lizardguard.
             Device::Deck(d) => {
-                d.haptic_click(550, -6, 5);
+                let d = Arc::clone(d);
+                std::thread::spawn(move || d.haptic_click(550, -6, 5));
             }
-            // Classic 2015: haptics not implemented (uncalibrated 0x8F report)
-            // — the entry point logs once and no-ops.
+            // Classic 2015: no-op (0x8F singer report uncalibrated).
             Device::Classic(c) => c.haptic_click(550, -6, 5),
         }
     }
 
-    /// Stronger pad-click tick.
+    /// Stronger pad-click tick — threaded for the same reason as above.
     pub fn pad_click_haptic(&self) {
         match self {
             Device::Triton(sc) => {
-                sc.haptic_pad_click();
+                let sc = Arc::clone(sc);
+                std::thread::spawn(move || sc.haptic_pad_click());
             }
             Device::Deck(d) => {
-                d.haptic_pad_click();
+                let d = Arc::clone(d);
+                std::thread::spawn(move || d.haptic_pad_click());
             }
             Device::Classic(c) => {
                 c.haptic_pad_click();
@@ -773,6 +790,9 @@ struct Reg {
     frames: u64,
     /// Rate telemetry: activity-frames since the last rate report.
     activity_frames: u64,
+    /// Last lizard state actually SENT to this (inactive) device + when.
+    lizard_sent: Option<bool>,
+    lizard_sent_at: Instant,
 }
 
 fn spawn_deck_reader(
@@ -919,8 +939,13 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
 
     /// The active device must be idle this long before another can take over.
     const SWITCH_IDLE: Duration = Duration::from_millis(300);
-    /// No frames at all for this long => device considered gone.
-    const GONE: Duration = Duration::from_millis(1500);
+    /// No frames at all for this long => device considered gone. Generous on
+    /// purpose: the supervision tick can legally consume a few hundred ms,
+    /// and a false GONE resets the whole manager mid-typing (the "lag").
+    const GONE: Duration = Duration::from_millis(3000);
+    // Presence enumerations are blocking (~tens of ms each) — amortize to
+    // every 3rd supervision tick.
+    let mut tick_n: u32 = 0;
 
     let (tx, rx) = mpsc::channel::<(Kind, SciInput)>();
     let mut registry: Vec<(Kind, Reg)> = Vec::new();
@@ -950,36 +975,42 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
         let now = Instant::now();
         if now >= next_supervise {
             next_supervise = now + Duration::from_secs(1);
-            // (Re)spawn readers for present devices (hot-plug).
-            let checks = [
-                (Kind::Deck, crate::deck::deck_present()),
-                (Kind::Triton, crate::triton::triton_present()),
-                (Kind::Classic, crate::classic::classic_present()),
-            ];
-            for (kind, present) in checks {
-                if !present {
-                    continue;
+            tick_n += 1;
+            // (Re)spawn readers for present devices (hot-plug). Enumerating
+            // is blocking, so only every 3rd tick.
+            if tick_n.is_multiple_of(3) {
+                let checks = [
+                    (Kind::Deck, crate::deck::deck_present()),
+                    (Kind::Triton, crate::triton::triton_present()),
+                    (Kind::Classic, crate::classic::classic_present()),
+                ];
+                for (kind, present) in checks {
+                    if !present {
+                        continue;
+                    }
+                    if readers.iter().any(|(k, h)| *k == kind && !h.is_finished()) {
+                        continue;
+                    }
+                    if let Some(dev) = spawn_reader(kind, &mut readers, &tx, &stop) {
+                        registry.retain(|(k, _)| *k != kind);
+                        registry.push((
+                            kind,
+                            Reg {
+                                dev,
+                                last_frame: Instant::now(),
+                                last_active: Instant::now() - SWITCH_IDLE - SWITCH_IDLE,
+                                prev_buttons: 0,
+                                dumped: false,
+                                frames: 0,
+                                activity_frames: 0,
+                                lizard_sent: None,
+                                lizard_sent_at: Instant::now(),
+                            },
+                        ));
+                        diag::log(&format!("osk: {kind:?} reader attached"));
+                    }
                 }
-                if readers.iter().any(|(k, h)| *k == kind && !h.is_finished()) {
-                    continue;
-                }
-                if let Some(dev) = spawn_reader(kind, &mut readers, &tx, &stop) {
-                    registry.retain(|(k, _)| *k != kind);
-                    registry.push((
-                        kind,
-                        Reg {
-                            dev,
-                            last_frame: Instant::now(),
-                            last_active: Instant::now() - SWITCH_IDLE - SWITCH_IDLE,
-                            prev_buttons: 0,
-                            dumped: false,
-                            frames: 0,
-                            activity_frames: 0,
-                        },
-                    ));
-                    diag::log(&format!("osk: {kind:?} reader attached"));
-                }
-            }
+            } // presence tick (every 3rd)
 
             if registry.is_empty() {
                 if !absence_noted {
@@ -1007,10 +1038,24 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
             // "SC moves the mouse while I type on the Deck"), ON when hidden
             // (desktop posture for everyone). The manager's per-frame policy
             // keeps owning the ACTIVE device; this tick owns the rest.
+            // Change-gated + 3 s re-assert, ALWAYS on a throwaway thread —
+            // an inline feature write stalls the frame pipeline (it waits on
+            // the reader's device mutex; the Triton disable even sleeps 50 ms
+            // for its double-tap).
             let vis = state.is_visible();
-            for (k, r) in registry.iter() {
-                if Some(*k) != active {
-                    r.dev.set_lizard(!vis);
+            for (k, r) in registry.iter_mut() {
+                if Some(*k) == active {
+                    continue;
+                }
+                let want = !vis;
+                if r.lizard_sent != Some(want)
+                    || r.lizard_sent_at.elapsed() > Duration::from_secs(3)
+                {
+                    r.lizard_sent = Some(want);
+                    r.lizard_sent_at = now;
+                    let dev = r.dev.clone();
+                    std::thread::spawn(move || dev.set_lizard(want));
+                    let _ = k;
                 }
             }
 
