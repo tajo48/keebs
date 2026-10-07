@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use hidapi::{HidApi, HidDevice};
 
 use crate::diag;
+use crate::lizardguard::LizardGrabber;
 use crate::sc::*;
 use crate::stop::StopFlag;
 
@@ -82,6 +83,10 @@ pub struct SteamController {
     opened: AtomicBool,
     passive: bool,
     lizard_enabled: AtomicBool,
+    /// Kernel-level lizard suppression for the dongle/wired controller's
+    /// evdev nodes (28de:1304 / 28de:1302) — the mechanism that actually
+    /// works on this hardware (see set_lizard).
+    grabber: Mutex<LizardGrabber>,
     battery: Mutex<Option<(Battery, Instant)>>,
     rumble_state: Mutex<(u8, u8)>,
     rumble_thread: Mutex<Option<thread::JoinHandle<()>>>,
@@ -99,6 +104,7 @@ impl SteamController {
             opened: AtomicBool::new(false),
             passive,
             lizard_enabled: AtomicBool::new(passive),
+            grabber: Mutex::new(LizardGrabber::new(&["1304", "1302"])),
             battery: Mutex::new(None),
             rumble_state: Mutex::new((0, 0)),
             rumble_thread: Mutex::new(None),
@@ -156,15 +162,9 @@ impl SteamController {
                 }
             };
 
-            if !self.passive {
-                match dev.send_feature_report(&DISABLE_LIZARD_REPORT) {
-                    Ok(_) => println!("steamcontroller: disable-lizard on iface {} ok", cand.iface),
-                    Err(e) => {
-                        last_err = Some(e.to_string());
-                        continue;
-                    }
-                }
-            }
+            // Lizard stays ENABLED at the firmware level on purpose (see the
+            // module docs + set_lizard): suppression is done at the kernel
+            // level (EVIOCGRAB) by set_lizard, never via feature reports.
 
             // Probe & VALIDATE. The dongle exposes several slots and an
             // unpaired/phantom one can emit input-shaped junk forever — the
@@ -257,24 +257,22 @@ impl SteamController {
 
     // -- control ------------------------------------------------------------
 
-    /// Toggle lizard (firmware mouse/kb) at runtime. The hardware watchdog
-    /// re-asserts in 3-5 s, so longer suppression needs periodic re-sends.
+    /// Toggle lizard (firmware mouse/kb) — implemented as a KERNEL EVIOCGRAB
+    /// on the controller's evdev nodes, NOT a firmware write: on this
+    /// hardware the SET_SETTINGS feature report either does nothing at
+    /// runtime or (worse) persists in firmware until a power-cycle (see the
+    /// module docs) — observed live: disable writes sent every 3 s and the
+    /// firmware mouse kept moving. `enabled=false` grabs the nodes so the
+    /// compositor never sees the emulated mouse/keys; `true` releases.
+    /// Input frames keep flowing through the hidraw data interface, which
+    /// EVIOCGRAB does not touch — same architecture as the Deck driver.
     pub fn set_lizard(&self, enabled: bool) {
         self.lizard_enabled.store(enabled, Ordering::SeqCst);
-        let report = if enabled {
-            &ENABLE_LIZARD_REPORT
+        let mut grabber = self.grabber.lock().unwrap();
+        if enabled {
+            grabber.release();
         } else {
-            &DISABLE_LIZARD_REPORT
-        };
-        let sent = self.with_dev(|dev| dev.send_feature_report(report));
-        if sent.is_none() {
-            return;
-        }
-        if !enabled {
-            // Double-tap the disable so the OSK-open transition wins the race
-            // against the firmware's own re-enable timer.
-            thread::sleep(Duration::from_millis(50));
-            let _ = self.with_dev(|dev| dev.send_feature_report(report));
+            grabber.engage();
         }
     }
 
@@ -618,9 +616,11 @@ impl SteamController {
     fn teardown(&self) {
         self.opened.store(false, Ordering::SeqCst);
         let dev = self.inner.lock().unwrap().take();
-        if let Some(dev) = dev {
-            // Stop any haptics still playing so the controller doesn't keep
-            // buzzing after we release the device.
+        if let Some(dev) = dev
+            && !self.passive
+        {
+            // Stop any haptics still playing; lizard suppression is released
+            // with the grabber (kernel-level), never a firmware write.
             for act in [
                 HAPTIC_PAD_LEFT,
                 HAPTIC_PAD_RIGHT,
@@ -629,12 +629,8 @@ impl SteamController {
             ] {
                 let _ = dev.write(&build_haptic_stop_report(act));
             }
-            // Restore lizard mode immediately instead of waiting for the
-            // hardware watchdog (~3-5 s).
-            if !self.passive {
-                let _ = dev.send_feature_report(&ENABLE_LIZARD_REPORT);
-            }
         }
+        self.grabber.lock().unwrap().release();
     }
 }
 

@@ -84,7 +84,7 @@ impl DeckController {
             lizard_enabled: flag,
             should_yield,
             session: Mutex::new(None),
-            grabber: Mutex::new(LizardGrabber::default()),
+            grabber: Mutex::new(LizardGrabber::new(&["1205"])),
         })
     }
 

@@ -1,12 +1,23 @@
-//! Lizard guard: neutralize the Deck's emulated mouse/keyboard at the KERNEL
-//! level, without any firmware cooperation.
+//! Lizard guard: neutralize a controller's emulated mouse/keyboard at the
+//! KERNEL level, without any firmware cooperation.
 //!
-//! Rust port of `steamcontroller/lizardguard.py` — and the reason the Python
-//! app had haptics while typing: instead of disabling lizard mode (which
-//! kills the firmware's native trackpad haptics), we hold `EVIOCGRAB` on
-//! every Deck evdev node so its emulated mouse/keyboard events are delivered
-//! ONLY to us and never reach the compositor. The firmware keeps running —
-//! and keeps ticking its haptics.
+//! Background: feature-report lizard disables are unreliable — on the Deck
+//! the firmware ignores them entirely, and on the Steam Controller 2026 the
+//! write reportedly persists in firmware until a power-cycle (see
+//! `triton.rs`). But the emulated input enters the system as ordinary evdev
+//! nodes created by the kernel's generic HID driver on the controller's
+//! keyboard/mouse interfaces. The EVIOCGRAB ioctl makes the kernel deliver
+//! a device's events ONLY to the grabbing file descriptor — the compositor
+//! stops seeing them entirely. One grab == lizard "off" from the desktop's
+//! point of view; one release == instantly back on. Our own input path reads
+//! the vendor data interface via hidraw/libusb, which EVIOCGRAB does not
+//! affect.
+//!
+//! Parameterized by USB product ids: the Deck uses 1205, the SC 2026
+//! dongle/wired use 1304/1302.
+//!
+//! Permission note: /dev/input/event* are root:input. Without write access
+//! the grab fails; we then print a one-time remediation hint.
 
 use std::ffi::CString;
 use std::os::fd::RawFd;
@@ -14,10 +25,9 @@ use std::path::Path;
 
 const EVIOCGRAB: libc::c_ulong = 0x4004_4590;
 const VID: &str = "28de";
-const PID: &str = "1205";
 
-/// Paths like /dev/input/event12 whose USB ancestry is the Deck.
-fn deck_event_nodes() -> Vec<String> {
+/// Paths like /dev/input/event12 whose USB ancestry is one of `pids`.
+fn event_nodes_for(pids: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir("/sys/class/input") else {
         return out;
@@ -45,7 +55,9 @@ fn deck_event_nodes() -> Vec<String> {
             let pid = std::fs::read_to_string(d.join("idProduct"));
             match (vid, pid) {
                 (Ok(v), Ok(p)) => {
-                    if v.trim().eq_ignore_ascii_case(VID) && p.trim().eq_ignore_ascii_case(PID) {
+                    if v.trim().eq_ignore_ascii_case(VID)
+                        && pids.iter().any(|want| p.trim().eq_ignore_ascii_case(want))
+                    {
                         out.push(format!("/dev/input/{name}"));
                     }
                     break;
@@ -61,13 +73,22 @@ fn fs_canonicalize(p: &str) -> std::io::Result<std::path::PathBuf> {
     std::fs::canonicalize(p)
 }
 
-/// Hold/release EVIOCGRAB on all of the Deck's evdev nodes.
-#[derive(Default)]
+/// Hold/release EVIOCGRAB on all of a device family's evdev nodes.
 pub struct LizardGrabber {
+    pids: Vec<String>,
     fds: Vec<RawFd>,
 }
 
 impl LizardGrabber {
+    /// `pids`: lowercase hex USB product ids ("1205", "1304", …) whose
+    /// evdev nodes this grabber owns.
+    pub fn new(pids: &[&str]) -> Self {
+        Self {
+            pids: pids.iter().map(|s| s.to_string()).collect(),
+            fds: Vec::new(),
+        }
+    }
+
     pub fn engaged(&self) -> bool {
         !self.fds.is_empty()
     }
@@ -78,7 +99,8 @@ impl LizardGrabber {
             return self.fds.len();
         }
         static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        for path in deck_event_nodes() {
+        let label = self.pids.join("/");
+        for path in event_nodes_for(&self.pids) {
             let Ok(c) = CString::new(path.clone()) else {
                 continue;
             };
@@ -88,8 +110,8 @@ impl LizardGrabber {
                     eprintln!(
                         "lizardguard: cannot open {path}: {} — fix once with: \
                          sudo usermod -aG input $USER then log out/in \
-                         (until then the Deck pads move the desktop mouse \
-                         while the keyboard is open)",
+                         (until then this controller's firmware mouse/keys \
+                         keep reaching the desktop)",
                         std::io::Error::last_os_error()
                     );
                 }
@@ -106,8 +128,8 @@ impl LizardGrabber {
         }
         if !self.fds.is_empty() {
             println!(
-                "lizardguard: holding {} Deck input node(s) — firmware \
-                 mouse/keys swallowed, native haptics stay alive",
+                "lizardguard: holding {} input node(s) for 28de:{label} — firmware \
+                 mouse/keys swallowed at the kernel level",
                 self.fds.len()
             );
         }
