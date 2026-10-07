@@ -26,14 +26,15 @@ font); it also listens for the mouse in case you want to click-type:
 | input | action |
 |-------|--------|
 | **Steam + X** | open the OSK |
-| **B** / **L4/L5 grip** / Steam released alone | close the OSK |
+| **B** / **R5** (right lower paddle) / Steam released alone | close the OSK |
 | **left stick / D-pad** | move the key cursor (tap = 1 key, hold = repeat) |
 | **A** | press the key under the cursor |
 | **X** | Backspace (hold to repeat) |
-| **Y / R4 / R5** | Space |
-| **L2** | Shift (hold) |
-| **R2** | Enter (hold) |
-| **trackpad touch** | move the pointer; **pad click** / L2/R2 presses the key under it |
+| **Y** | Space |
+| **L4** (left upper paddle) | hold **Ctrl** |
+| **L5** (left lower paddle) | hold **Alt** |
+| **R4** (right upper paddle) | hold **Win** |
+| **trackpad touch** | move the pointer; **pad click** / L2/R2 while touched presses the key under it |
 | **right stick** | move the system mouse (point-and-click keys) |
 | **Steam + left stick** | volume / prev-next track |
 | **Steam + VIEW** | Alt+Tab |
@@ -53,8 +54,8 @@ whenever Enter is sent, so Enter never arrives as Shift/Ctrl/Alt/Win+Enter.
 | Variable | Default | What |
 |---|---|---|
 | `KEEBS_PAD_GAIN` | `1.1` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
-| `KEEBS_SC_TICK` | `550,-6,5,18` | SC 2026 UI tick: `freq,gain,count,ms` (gain −127..127, higher = louder) |
-| `KEEBS_SC_PADCLICK` | `550,-5,6,18` | SC 2026 pad-click buzz, same format |
+| `KEEBS_SC_TICK` | `550,-2,6,20` | SC 2026 UI tick: `freq,gain,count,ms` (gain −127..127, higher = louder) |
+| `KEEBS_SC_PADCLICK` | `550,-1,8,20` | SC 2026 pad-click buzz, same format |
 
 Example: `KEEBS_PAD_GAIN=3 KEEBS_SC_TICK=800,-3,3,12 nix run .#keebs`
 (The Deck's haptics are firmware-native and are never overridden.)

@@ -453,17 +453,19 @@ impl Screen {
             }
         }
 
-        // Pointer dots: show where each finger is on the trackpads
-        // (screen.py render_ptr). Clicking pads paint the dot blue.
+        // Pointer dots: Catppuccin Frappé green (#a6d189), fully opaque
+        // (user preference); slightly lighter tint on click.
+        const POINTER_DOT: (u8, u8, u8) = (0xA6, 0xD1, 0x89); // catppuccin frappé green
+        const POINTER_DOT_CLICK: (u8, u8, u8) = (0xC3, 0xE2, 0xAE); // lighter tint
         for ptr in &pointers {
             if ptr.state == InputState::Inactive {
                 continue;
             }
             let (cx, cy) = state.frac_to_abs(ptr.frac);
             let (color, alpha) = if ptr.state == InputState::Click {
-                (KEY_CLICK, 220u8)
+                (POINTER_DOT_CLICK, 255u8)
             } else {
-                (KEY_HOVER, 150u8)
+                (POINTER_DOT, 255u8)
             };
             self.fill_circle(cx, cy, 13.0, color, alpha);
         }

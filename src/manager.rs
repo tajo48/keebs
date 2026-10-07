@@ -76,7 +76,7 @@ impl Device {
     pub fn haptic_tick(&self) {
         match self {
             Device::Triton(sc) => {
-                let (f, g, c, ms) = env_quad("KEEBS_SC_TICK", [550, -6, 5, 18]);
+                let (f, g, c, ms) = env_quad("KEEBS_SC_TICK", [550, -2, 6, 20]);
                 let sc = Arc::clone(sc);
                 std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
             }
@@ -93,7 +93,7 @@ impl Device {
     pub fn pad_click_haptic(&self) {
         match self {
             Device::Triton(sc) => {
-                let (f, g, c, ms) = env_quad("KEEBS_SC_PADCLICK", [550, -5, 6, 18]);
+                let (f, g, c, ms) = env_quad("KEEBS_SC_PADCLICK", [550, -1, 8, 20]);
                 let sc = Arc::clone(sc);
                 std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
             }
@@ -150,7 +150,6 @@ pub struct ControllerManager {
     // Rising-edge latches.
     l3_was_pressed: bool,
     b_was_pressed: bool,
-    lgrip_was_pressed: bool,
     a_was_pressed: bool,
     a_repeat_at: Instant,
     view_was_pressed: bool,
@@ -160,7 +159,6 @@ pub struct ControllerManager {
     x_repeat_at: Instant,
     lt_prev: bool,
     rt_prev: bool,
-    lt_role: Option<Role>,
     lclick_repeat_at: Option<Instant>,
     rclick_repeat_at: Option<Instant>,
     stick_zone_prev: Zone,
@@ -170,10 +168,12 @@ pub struct ControllerManager {
     open_tick_pending: bool,
     lizard_asserted_on: Option<bool>,
     last_lizard_assert: Instant,
-    shift_active: bool,
-    enter_active: bool,
-    /// Next auto-repeat fire for the R2-Enter tap.
-    enter_repeat_at: Option<Instant>,
+    /// Back-paddle hold-modifiers (user mapping): L4=Ctrl, L5=Alt, R4=Win.
+    ctrl_held: bool,
+    alt_held: bool,
+    win_held: bool,
+    /// R5 (right lower paddle) rising edge closes the keyboard.
+    r5_was_pressed: bool,
     mouse_l_active: bool,
     mouse_r_active: bool,
     mouse_acc_x: f32,
@@ -182,23 +182,12 @@ pub struct ControllerManager {
     sc_input_previous: SciInput,
 }
 
-// `Mouse` arm arrives with the desktop-mode/click-through port.
-#[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq)]
-enum Role {
-    Click,
-    Mouse,
-    Shift,
-}
-
 impl ControllerManager {
     pub fn new() -> std::io::Result<Self> {
         let mut evm = EventMapper::new()?;
         // Face buttons whose action is unconditional ride EventMapper;
         // everything conditional/latching is handled in handle_input.
         evm.set_button_action(btn::Y, "KEY_SPACE");
-        evm.set_button_action(btn::RGRIP1, "KEY_SPACE"); // R4/R5 -> Space (Steam OSK mapping)
-        evm.set_button_action(btn::RGRIP2, "KEY_SPACE");
         Ok(Self {
             kb: Keyboard::new()?,
             mouse: Mouse::new()?,
@@ -208,7 +197,6 @@ impl ControllerManager {
             open_t: Instant::now(),
             l3_was_pressed: false,
             b_was_pressed: false,
-            lgrip_was_pressed: false,
             a_was_pressed: false,
             a_repeat_at: Instant::now(),
             view_was_pressed: false,
@@ -218,7 +206,6 @@ impl ControllerManager {
             x_repeat_at: Instant::now(),
             lt_prev: false,
             rt_prev: false,
-            lt_role: None,
             lclick_repeat_at: None,
             rclick_repeat_at: None,
             stick_zone_prev: Zone::Neutral,
@@ -228,9 +215,10 @@ impl ControllerManager {
             open_tick_pending: true,
             lizard_asserted_on: None,
             last_lizard_assert: Instant::now(),
-            shift_active: false,
-            enter_active: false,
-            enter_repeat_at: None,
+            ctrl_held: false,
+            alt_held: false,
+            win_held: false,
+            r5_was_pressed: false,
             mouse_l_active: false,
             mouse_r_active: false,
             mouse_acc_x: 0.0,
@@ -241,8 +229,8 @@ impl ControllerManager {
     }
 
     pub fn release_held(&mut self, state: &OskState) {
-        // Make sure Shift/Enter/Ctrl/Alt/mouse buttons never stay stuck on the
-        // OS (sticky OSK modifiers + L2/R2 roles).
+        // Make sure no injected modifier/key ever stays stuck on the OS
+        // (sticky OSK modifiers + back-paddle holds).
         self.kb.release_code(K::KEY_LEFTSHIFT);
         self.kb.release_code(K::KEY_RIGHTSHIFT);
         self.kb.release_code(K::KEY_ENTER);
@@ -250,6 +238,9 @@ impl ControllerManager {
         self.kb.release_code(K::KEY_LEFTCTRL);
         self.kb.release_code(K::KEY_RIGHTALT);
         self.kb.release_code(K::KEY_LEFTMETA);
+        self.ctrl_held = false;
+        self.alt_held = false;
+        self.win_held = false;
         state.set_ctrl_latched(false);
         state.set_alt_latched(false);
         state.set_altgr_latched(false);
@@ -278,7 +269,6 @@ impl ControllerManager {
         self.open_t = Instant::now();
         self.l3_was_pressed = false;
         self.b_was_pressed = false;
-        self.lgrip_was_pressed = false;
         self.a_was_pressed = false;
         self.a_repeat_at = Instant::now();
         self.view_was_pressed = false;
@@ -288,7 +278,6 @@ impl ControllerManager {
         self.x_repeat_at = Instant::now();
         self.lt_prev = false;
         self.rt_prev = false;
-        self.lt_role = None;
         self.lclick_repeat_at = None;
         self.rclick_repeat_at = None;
         self.stick_zone_prev = Zone::Neutral;
@@ -297,9 +286,10 @@ impl ControllerManager {
         self.kbd_stick_repeat_at = Instant::now();
         self.open_tick_pending = false;
         self.lizard_asserted_on = None;
-        self.shift_active = false;
-        self.enter_active = false;
-        self.enter_repeat_at = None;
+        self.ctrl_held = false;
+        self.alt_held = false;
+        self.win_held = false;
+        self.r5_was_pressed = false;
         self.mouse_acc_x = 0.0;
         self.mouse_acc_y = 0.0;
         self.mouse_last_t = None;
@@ -367,90 +357,59 @@ impl ControllerManager {
         let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
         state.set_pad_touched(lpad_touched, rpad_touched);
 
-        // R2: right pad touched -> key press (pad path); else -> Enter as a
-        // TAP with hold-to-repeat. The old press-and-hold-until-release model
-        // held KEY_ENTER down for as long as the trigger lasted — apps'
-        // auto-repeat turned that into a burst of newlines/sends (read as
-        // "enter acts like shift-enter"). A tap behaves exactly like a real
-        // keyboard; modifiers are dropped first so it can never ride along
-        // as Shift/Ctrl/Alt/AltGr/Win+Enter.
+        // R2/L2 role logic (Shift/Enter) is GONE — the user never uses it.
+        // Triggers still act as "press the key under the pointer" while a
+        // pad is touched (the handle_pad_input click roles below).
+        let lt_pressed = self.trigger_pressed(b, btn::LT, b.ltrig as i32);
+        let lt_was = self.lt_prev;
+        self.lt_prev = lt_pressed;
         let rt_pressed = self.trigger_pressed(b, btn::RT, b.rtrig as i32);
         let rt_was = self.rt_prev;
         self.rt_prev = rt_pressed;
-        let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
-        let enter_active = rt_pressed && !rpad_touched;
-        if enter_active && !rt_was {
-            if state.is_shift_latched() {
-                state.set_shift_latched(false);
-                state.set_shift_held(false);
-                self.kb.release_code(K::KEY_LEFTSHIFT);
-                self.kb.release_code(K::KEY_RIGHTSHIFT);
-            }
-            if state.is_ctrl_latched() {
-                state.set_ctrl_latched(false);
-                self.kb.release_code(K::KEY_LEFTCTRL);
-            }
-            if state.is_alt_latched() {
-                state.set_alt_latched(false);
-                self.kb.release_code(K::KEY_LEFTALT);
-            }
-            if state.is_altgr_latched() {
-                state.set_altgr_latched(false);
-                self.kb.release_code(K::KEY_RIGHTALT);
-            }
-            if state.is_win_latched() {
-                state.set_win_latched(false);
-                self.kb.release_code(K::KEY_LEFTMETA);
-            }
-            self.kb.tap_code(K::KEY_ENTER);
-            self.enter_repeat_at = Some(now + Duration::from_secs_f32(vkb::KEY_REPEAT_DELAY));
-            dev.pad_click_haptic();
-        } else if enter_active && self.enter_repeat_at.map(|t| now >= t).unwrap_or(true) {
-            self.kb.tap_code(K::KEY_ENTER);
-            self.enter_repeat_at = Some(now + Duration::from_secs_f32(vkb::KEY_REPEAT_INTERVAL));
+
+        // Back paddles (user mapping): L4 = Ctrl hold, L5 = Alt hold,
+        // R4 = Win hold — same hold mechanic as the old L2 shift (press on
+        // rising edge, release on falling) — and R5 closes the keyboard.
+        let l4 = b.buttons & btn::LGRIP1 != 0;
+        let l5 = b.buttons & btn::LGRIP2 != 0;
+        let r4 = b.buttons & btn::RGRIP1 != 0;
+        let r5 = b.buttons & btn::RGRIP2 != 0;
+        if l4 && !self.ctrl_held {
+            self.kb.press_code(K::KEY_LEFTCTRL);
+            self.ctrl_held = true;
+        } else if !l4 && self.ctrl_held {
+            self.kb.release_code(K::KEY_LEFTCTRL);
+            self.ctrl_held = false;
         }
-        self.enter_active = enter_active;
-
-        // L2 role, fixed at press: pad touched -> "click"; else -> "shift".
-        let lt_pressed = self.trigger_pressed(b, btn::LT, b.ltrig as i32);
-        let lt_was = self.lt_prev;
-        if lt_pressed && !self.lt_prev {
-            self.lt_role = Some(if lpad_touched {
-                Role::Click
-            } else {
-                Role::Shift
-            });
-        } else if !lt_pressed {
-            self.lt_role = None;
+        if l5 && !self.alt_held {
+            self.kb.press_code(K::KEY_LEFTALT);
+            self.alt_held = true;
+        } else if !l5 && self.alt_held {
+            self.kb.release_code(K::KEY_LEFTALT);
+            self.alt_held = false;
         }
-        self.lt_prev = lt_pressed;
-
-        // Shift hold — suppressed while the R2-Enter role is engaged.
-        let shift_should_hold = lt_pressed && self.lt_role == Some(Role::Shift) && !enter_active;
-        if shift_should_hold && !self.shift_active {
-            self.kb.press_code(K::KEY_LEFTSHIFT);
-            self.shift_active = true;
-            dev.pad_click_haptic();
-        } else if !shift_should_hold && self.shift_active {
-            self.kb.release_code(K::KEY_LEFTSHIFT);
-            self.shift_active = false;
+        if r4 && !self.win_held {
+            self.kb.press_code(K::KEY_LEFTMETA);
+            self.win_held = true;
+        } else if !r4 && self.win_held {
+            self.kb.release_code(K::KEY_LEFTMETA);
+            self.win_held = false;
         }
+        if r5 && !self.r5_was_pressed {
+            state.close();
+        }
+        self.r5_was_pressed = r5;
 
-        // Mirror Shift state to the renderer (OR in the mouse latch).
-        state.set_shift_held(self.shift_active || state.is_shift_latched());
-
-        // B and L4/L5 (LGRIP) close the keyboard, on rising edge.
+        // B closes the keyboard, on rising edge.
         let b_pressed = b.buttons & btn::B != 0;
         if b_pressed && !self.b_was_pressed {
             state.close();
         }
         self.b_was_pressed = b_pressed;
 
-        let lgrip_pressed = b.buttons & btn::LGRIP != 0;
-        if lgrip_pressed && !self.lgrip_was_pressed {
-            state.close();
-        }
-        self.lgrip_was_pressed = lgrip_pressed;
+        // Mirror Shift state to the renderer (mouse latch only — the L2
+        // shift role is gone; the OSK Shift key latch drives the glyphs).
+        state.set_shift_held(state.is_shift_latched());
 
         // DPAD steps the cursor (queued; main loop knows pixel layout).
         let dpad_mask = btn::DPAD_UP | btn::DPAD_DOWN | btn::DPAD_LEFT | btn::DPAD_RIGHT;
@@ -489,23 +448,23 @@ impl ControllerManager {
 
         // Visual highlight: paint keys whose bound button is held.
         let mut highlights = std::collections::HashSet::new();
-        if self.shift_active || state.is_shift_latched() {
+        if state.is_shift_latched() {
             highlights.insert(K::KEY_LEFTSHIFT);
             highlights.insert(K::KEY_RIGHTSHIFT);
         }
         // Sticky OSK modifiers glow while latched (the per-frame set is the
         // single source of truth — the latch-time set would be overwritten
-        // here one frame later).
-        if state.is_ctrl_latched() {
+        // here one frame later). Back-paddle holds light the same keys.
+        if state.is_ctrl_latched() || self.ctrl_held {
             highlights.insert(K::KEY_LEFTCTRL);
         }
-        if state.is_alt_latched() {
+        if state.is_alt_latched() || self.alt_held {
             highlights.insert(K::KEY_LEFTALT);
         }
         if state.is_altgr_latched() {
             highlights.insert(K::KEY_RIGHTALT);
         }
-        if state.is_win_latched() {
+        if state.is_win_latched() || self.win_held {
             highlights.insert(K::KEY_LEFTMETA);
         }
         // Caps glows while ACTUALLY latched on (same source that flips the
@@ -518,10 +477,7 @@ impl ControllerManager {
         if b.buttons & btn::X != 0 {
             highlights.insert(K::KEY_BACKSPACE);
         }
-        if self.enter_active {
-            highlights.insert(K::KEY_ENTER);
-        }
-        if b.buttons & (btn::Y | btn::RGRIP) != 0 {
+        if b.buttons & btn::Y != 0 {
             highlights.insert(K::KEY_SPACE);
         }
         state.set_highlighted(highlights);
