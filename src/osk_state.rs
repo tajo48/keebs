@@ -72,6 +72,8 @@ pub struct OskState {
     shift_latched: AtomicBool,
     ctrl_latched: AtomicBool,
     alt_latched: AtomicBool,
+    altgr_latched: AtomicBool,
+    win_latched: AtomicBool,
     emoji_open: AtomicBool,
     /// Cached Caps Lock state — the live X11 query is a synchronous
     /// round-trip and must never run per render frame (it stalled typing).
@@ -105,6 +107,8 @@ impl OskState {
             shift_latched: AtomicBool::new(false),
             ctrl_latched: AtomicBool::new(false),
             alt_latched: AtomicBool::new(false),
+            altgr_latched: AtomicBool::new(false),
+            win_latched: AtomicBool::new(false),
             emoji_open: AtomicBool::new(false),
             caps_on: AtomicBool::new(false),
             highlighted: Mutex::new(HashSet::new()),
@@ -158,6 +162,18 @@ impl OskState {
     }
     pub fn set_alt_latched(&self, v: bool) {
         self.alt_latched.store(v, Ordering::SeqCst);
+    }
+    pub fn is_altgr_latched(&self) -> bool {
+        self.altgr_latched.load(Ordering::SeqCst)
+    }
+    pub fn set_altgr_latched(&self, v: bool) {
+        self.altgr_latched.store(v, Ordering::SeqCst);
+    }
+    pub fn is_win_latched(&self) -> bool {
+        self.win_latched.load(Ordering::SeqCst)
+    }
+    pub fn set_win_latched(&self, v: bool) {
+        self.win_latched.store(v, Ordering::SeqCst);
     }
     /// Cached Caps Lock state (adusk.state `is_caps_on`): physical and
     /// injected CapsLock stay in sync via periodic refresh — see

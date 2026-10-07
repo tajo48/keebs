@@ -42,15 +42,17 @@ font); it also listens for the mouse in case you want to click-type:
 Mouse also works on the OSK directly: hover highlights, left-click presses,
 right-click = Shift, back/forward buttons = Backspace/Space.
 
-The bottom row has sticky **Ctrl** and **Alt** keys (click once — the real
+The bottom row has sticky **Ctrl**, **Alt**, **AltGr** (Right Alt — Polish
+ą/ę/ś… on the programmer layout) and **Win** keys (click once — the real
 modifier is held and the key highlights — then tap keys; click again or
-close the keyboard to release).
+close the keyboard to release). Sticky modifiers are dropped automatically
+whenever Enter is sent, so Enter never arrives as Shift/Ctrl/Alt/Win+Enter.
 
 ### Live tuning (environment variables)
 
 | Variable | Default | What |
 |---|---|---|
-| `KEEBS_PAD_GAIN` | `1.5` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
+| `KEEBS_PAD_GAIN` | `1.3` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
 | `KEEBS_SC_TICK` | `550,-6,5,18` | SC 2026 UI tick: `freq,gain,count,ms` (gain −127..127, higher = louder) |
 | `KEEBS_SC_PADCLICK` | `550,-5,6,18` | SC 2026 pad-click buzz, same format |
 

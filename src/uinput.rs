@@ -315,6 +315,7 @@ pub mod keys {
     pub const KEY_SPACE: u16 = 57;
     pub const KEY_CAPSLOCK: u16 = 58;
     pub const KEY_LEFTMETA: u16 = 125;
+    pub const KEY_RIGHTALT: u16 = 100;
     pub const KEY_UP: u16 = 103;
     pub const KEY_LEFT: u16 = 105;
     pub const KEY_RIGHT: u16 = 106;

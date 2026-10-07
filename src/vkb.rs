@@ -52,6 +52,11 @@ pub enum Behavior {
     Ctrl,
     /// Sticky Alt modifier, same mechanism.
     Alt,
+    /// Sticky AltGr (Right Alt) — Polish diacritics (ą, ę, ś…) on the
+    /// programmer layout ride AltGr+letter.
+    AltGr,
+    /// Sticky Win/Super (Left Meta).
+    Win,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -258,8 +263,24 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
                 Align::Center,
                 VAlign::Center,
             ),
+            mod_key(
+                "AltGr",
+                K::KEY_RIGHTALT,
+                Behavior::AltGr,
+                0.9,
+                Align::Center,
+                VAlign::Center,
+            ),
+            mod_key(
+                "Win",
+                K::KEY_LEFTMETA,
+                Behavior::Win,
+                0.9,
+                Align::Center,
+                VAlign::Center,
+            ),
             KeyDef {
-                width_weight: 5.2,
+                width_weight: 4.0,
                 align: Align::Left,
                 hint: Some("Y / R4 / R5"),
                 ..key("", None, K::KEY_SPACE)
@@ -547,6 +568,63 @@ impl Dispatcher<'_> {
         }
     }
 
+    /// Sticky AltGr (Right Alt) — Polish diacritics on the programmer layout.
+    pub fn toggle_altgr(&self) {
+        let new = !self.state.is_altgr_latched();
+        self.state.set_altgr_latched(new);
+        if new {
+            self.kb.press_code(K::KEY_RIGHTALT);
+            let mut hl = std::collections::HashSet::new();
+            hl.insert(K::KEY_RIGHTALT);
+            self.state.set_highlighted(hl);
+        } else {
+            self.kb.release_code(K::KEY_RIGHTALT);
+            self.state.set_highlighted(std::collections::HashSet::new());
+        }
+    }
+
+    /// Sticky Win/Super.
+    pub fn toggle_win(&self) {
+        let new = !self.state.is_win_latched();
+        self.state.set_win_latched(new);
+        if new {
+            self.kb.press_code(K::KEY_LEFTMETA);
+            let mut hl = std::collections::HashSet::new();
+            hl.insert(K::KEY_LEFTMETA);
+            self.state.set_highlighted(hl);
+        } else {
+            self.kb.release_code(K::KEY_LEFTMETA);
+            self.state.set_highlighted(std::collections::HashSet::new());
+        }
+    }
+
+    /// Release every sticky modifier (latch + real OS key) — used so Enter
+    /// never arrives as a modifier chord.
+    pub fn drop_latches(&self) {
+        if self.state.is_shift_latched() {
+            self.state.set_shift_latched(false);
+            self.state.set_shift_held(false);
+            self.kb.release_code(K::KEY_LEFTSHIFT);
+            self.kb.release_code(K::KEY_RIGHTSHIFT);
+        }
+        if self.state.is_ctrl_latched() {
+            self.state.set_ctrl_latched(false);
+            self.kb.release_code(K::KEY_LEFTCTRL);
+        }
+        if self.state.is_alt_latched() {
+            self.state.set_alt_latched(false);
+            self.kb.release_code(K::KEY_LEFTALT);
+        }
+        if self.state.is_altgr_latched() {
+            self.state.set_altgr_latched(false);
+            self.kb.release_code(K::KEY_RIGHTALT);
+        }
+        if self.state.is_win_latched() {
+            self.state.set_win_latched(false);
+            self.kb.release_code(K::KEY_LEFTMETA);
+        }
+    }
+
     /// Force-release the OS Shift key so hiding the keyboard never leaves
     /// Shift stuck down.
     pub fn release_shift(&self) {
@@ -571,6 +649,13 @@ impl Dispatcher<'_> {
         }
         match key.behavior {
             Behavior::Generic => {
+                // Enter must arrive CLEAN: any sticky modifier riding along
+                // turns it into Shift/Ctrl/Alt/Win+Enter, which apps treat as
+                // newline/submit/fullscreen — the "enter is kinda broken"
+                // reports. Drop every latch for this one key.
+                if keycode == K::KEY_ENTER {
+                    self.drop_latches();
+                }
                 self.kb.tap_code(keycode);
                 // Caps Lock state is read live from the X server modifier
                 // mask by the renderer — injected capslock shows up on the
@@ -579,6 +664,8 @@ impl Dispatcher<'_> {
             Behavior::Shift => self.toggle_shift(),
             Behavior::Ctrl => self.toggle_ctrl(),
             Behavior::Alt => self.toggle_alt(),
+            Behavior::AltGr => self.toggle_altgr(),
+            Behavior::Win => self.toggle_win(),
             Behavior::Paste => {
                 // Shift -> Ctrl+C (copy), otherwise Ctrl+V (paste). Always
                 // release both shifts first so the chord isn't polluted by a

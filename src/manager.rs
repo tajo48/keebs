@@ -245,8 +245,12 @@ impl ControllerManager {
         self.kb.release_code(K::KEY_ENTER);
         self.kb.release_code(K::KEY_LEFTALT);
         self.kb.release_code(K::KEY_LEFTCTRL);
+        self.kb.release_code(K::KEY_RIGHTALT);
+        self.kb.release_code(K::KEY_LEFTMETA);
         state.set_ctrl_latched(false);
         state.set_alt_latched(false);
+        state.set_altgr_latched(false);
+        state.set_win_latched(false);
         if self.mouse_l_active {
             self.mouse.release("right");
             self.mouse_l_active = false;
@@ -369,14 +373,30 @@ impl ControllerManager {
         let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
         let enter_should_hold = rt_pressed && !rpad_touched;
         if enter_should_hold && !self.enter_active {
-            // A sticky OSK Shift latches a REAL modifier; riding along with
-            // Enter it becomes Shift+Enter — a newline in chat apps instead
-            // of send. Drop the latch for the duration of the Enter hold.
+            // Enter must arrive CLEAN: any sticky modifier riding along turns
+            // it into Shift/Ctrl/Alt/AltGr/Win+Enter — newline in chat apps,
+            // submit/submit-elsewhere, fullscreen toggles. Drop them all.
             if state.is_shift_latched() {
                 state.set_shift_latched(false);
                 state.set_shift_held(false);
                 self.kb.release_code(K::KEY_LEFTSHIFT);
                 self.kb.release_code(K::KEY_RIGHTSHIFT);
+            }
+            if state.is_ctrl_latched() {
+                state.set_ctrl_latched(false);
+                self.kb.release_code(K::KEY_LEFTCTRL);
+            }
+            if state.is_alt_latched() {
+                state.set_alt_latched(false);
+                self.kb.release_code(K::KEY_LEFTALT);
+            }
+            if state.is_altgr_latched() {
+                state.set_altgr_latched(false);
+                self.kb.release_code(K::KEY_RIGHTALT);
+            }
+            if state.is_win_latched() {
+                state.set_win_latched(false);
+                self.kb.release_code(K::KEY_LEFTMETA);
             }
             self.kb.press_code(K::KEY_ENTER);
             self.enter_active = true;
@@ -478,7 +498,17 @@ impl ControllerManager {
         if state.is_alt_latched() {
             highlights.insert(K::KEY_LEFTALT);
         }
-        if l3_pressed && !steam_now {
+        if state.is_altgr_latched() {
+            highlights.insert(K::KEY_RIGHTALT);
+        }
+        if state.is_win_latched() {
+            highlights.insert(K::KEY_LEFTMETA);
+        }
+        // Caps glows while ACTUALLY latched on (same source that flips the
+        // letter glyphs — previously it only lit while L3 was physically
+        // held, so letters could be uppercase with no glowing Caps key),
+        // plus transient feedback while L3 is held.
+        if (l3_pressed && !steam_now) || state.is_caps_on() {
             highlights.insert(K::KEY_CAPSLOCK);
         }
         if b.buttons & btn::X != 0 {
@@ -801,7 +831,7 @@ fn pad_gain() -> f32 {
             .ok()
             .and_then(|s| s.trim().parse::<f32>().ok())
             .filter(|v| (0.05..=20.0).contains(v))
-            .unwrap_or(1.5)
+            .unwrap_or(1.3)
     })
 }
 
