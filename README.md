@@ -56,7 +56,7 @@ whenever Enter is sent, so Enter never arrives as Shift/Ctrl/Alt/Win+Enter.
 |---|---|---|
 | `KEEBS_PAD_GAIN` | `1.1` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
 | `KEEBS_SC_TICK` | `550,-2,6,20` | SC 2026 UI tick: `freq,gain,count,ms` (gain −127..127, higher = louder) |
-| `KEEBS_SC_PADCLICK` | `550,-1,8,20` | SC 2026 pad-click buzz, same format |
+| `KEEBS_SC_PADCLICK` | `500,8,4,14` | SC 2026 pad-click pop — hard but INSTANT (loudness via gain, never a longer burst) |
 
 Example: `KEEBS_PAD_GAIN=3 KEEBS_SC_TICK=800,-3,3,12 nix run .#keebs`
 (The Deck's haptics are firmware-native and are never overridden.)

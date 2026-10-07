@@ -209,7 +209,9 @@ pub fn run(stop: Arc<StopFlag>) {
                         state: &state,
                     }
                     .dispatch(kd);
-                    state.haptic_tick();
+                    // No second buzz here: the pad PRESS already popped via
+                    // pad_click_haptic — a dispatch tick made every click
+                    // double-buzz (user: "leave only the first one").
                 }
             }
 

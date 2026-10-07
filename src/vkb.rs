@@ -318,7 +318,6 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
             KeyDef {
                 glyph: Some("\u{2328}"), // ⌨
-                hint: Some("B/R5"),
                 ..mod_key("Close", 0, Behavior::Move, 1.4, Align::Center, Top)
             },
         ],
@@ -452,21 +451,16 @@ impl VirtualKeyboard {
         }
     }
 
-    /// True if holding this key should auto-repeat (Backspace + arrows, in
-    /// either their base or shift keycode form).
+    /// True if holding this key should auto-repeat. EVERY plain typing key
+    /// repeats (letters, digits, symbols, Space, Tab, Enter) — the old
+    /// Steam-OSK rule (Backspace + arrows only) silently dropped letter
+    /// repeats at the drain step ("no repeat for letters"). Modifier and
+    /// special behaviors toggle instead of repeating.
     pub fn is_repeatable(&self, row: usize, col: usize) -> bool {
         let Some(key) = self.keys.get(row).and_then(|r| r.get(col)) else {
             return false;
         };
-        const REPEATABLE: [u16; 5] = [
-            K::KEY_BACKSPACE,
-            K::KEY_LEFT,
-            K::KEY_RIGHT,
-            K::KEY_UP,
-            K::KEY_DOWN,
-        ];
-        REPEATABLE.contains(&key.keycode)
-            || key.shift_keycode.is_some_and(|c| REPEATABLE.contains(&c))
+        key.behavior == Behavior::Generic && key.keycode != 0
     }
 
     /// Step the DPAD/stick cursor using actual layout pixel positions.

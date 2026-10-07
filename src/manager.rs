@@ -90,7 +90,11 @@ impl Device {
     pub fn pad_click_haptic(&self) {
         match self {
             Device::Triton(sc) => {
-                let (f, g, c, ms) = env_quad("KEEBS_SC_PADCLICK", [550, -1, 8, 20]);
+                // Instant-by-construction: count 4 (~8 ms at 500 Hz) keeps
+                // the burst a sharp POP; loudness comes from the HIGH gain,
+                // NOT a longer burst (count 12 smeared the click into a
+                // delayed buzz — "needs to be instant").
+                let (f, g, c, ms) = env_quad("KEEBS_SC_PADCLICK", [500, 8, 4, 14]);
                 let sc = Arc::clone(sc);
                 std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
             }
@@ -631,10 +635,7 @@ impl ControllerManager {
         is_left: bool,
     ) -> ((f32, f32), InputState) {
         let prev = self.sc_input_previous.buttons;
-        // Pad-release rumbles too, so a click feels like a full button.
-        if (b.buttons & click_mask == 0) && (prev & click_mask != 0) {
-            dev.pad_click_haptic();
-        }
+        // (Pad-release rumble removed — only the PRESS buzzes, user mapping.)
         if b.buttons & touch_mask == 0 {
             return (coords, InputState::Inactive);
         }

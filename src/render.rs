@@ -448,25 +448,21 @@ impl Screen {
             }
         }
 
-        // Pointer dots: Catppuccin Frappé green (#a6d189), fully opaque
-        // (user preference); slightly lighter tint on click.
-        const POINTER_DOT: (u8, u8, u8) = (0xA6, 0xD1, 0x89); // catppuccin frappé green
-        const POINTER_DOT_CLICK: (u8, u8, u8) = (0xC3, 0xE2, 0xAE); // lighter tint
+        // Pointer dots: single solid Catppuccin Frappé accent disc — peach
+        // while hovering, yellow on click (user preference: no border).
+        const POINTER_DOT: (u8, u8, u8) = (0xEF, 0x9F, 0x76); // frappé peach
+        const POINTER_DOT_CLICK: (u8, u8, u8) = (0xE5, 0xC8, 0x90); // frappé yellow
         for ptr in &pointers {
             if ptr.state == InputState::Inactive {
                 continue;
             }
             let (cx, cy) = state.frac_to_abs(ptr.frac);
-            let (color, alpha) = if ptr.state == InputState::Click {
-                (POINTER_DOT_CLICK, 255u8)
+            let color = if ptr.state == InputState::Click {
+                POINTER_DOT_CLICK
             } else {
-                (POINTER_DOT, 255u8)
+                POINTER_DOT
             };
-            // Catppuccin Frappé blue (#8caaee) INNER dot: solid green disc
-            // with a smaller blue core (user preference: blue inside).
-            const FRAPPE_BLUE: (u8, u8, u8) = (0x8C, 0xAA, 0xEE);
-            self.fill_circle(cx, cy, 13.0, color, alpha);
-            self.fill_circle(cx, cy, 5.5, FRAPPE_BLUE, 255);
+            self.fill_circle(cx, cy, 12.0, color, 255);
         }
 
         unsafe {
