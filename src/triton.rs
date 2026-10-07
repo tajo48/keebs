@@ -198,7 +198,13 @@ impl SteamController {
                     continue;
                 };
                 frames += 1;
-                let mask = sci.buttons & !(buttons::LGRIP_REST | buttons::RGRIP_REST);
+                // Same NOISE mask as the manager's activity gate (lizard
+                // joystick-emulation bits flip on their own in desktop mode).
+                let mask = sci.buttons
+                    & !(buttons::LGRIP_REST
+                        | buttons::RGRIP_REST
+                        | buttons::LPADJOY_TOUCH
+                        | buttons::RPADJOY_TOUCH);
                 if mask == 0 {
                     quiet += 1;
                 }
@@ -208,13 +214,19 @@ impl SteamController {
                 prev_buttons = Some(sci.buttons);
             }
 
-            let ok = frames >= 2 && quiet >= 1;
+            // Acceptance = streams parseable input frames. Every phantom
+            // slot observed in the wild is SILENT (0 frames), so the frame
+            // count alone separates real from phantom — and the earlier
+            // "must show a quiet frame" rider only ever rejected the REAL
+            // controller when the user happened to be holding it at startup
+            // (thumb on pad / lizard joystick bits = never-quiet).
+            let ok = frames >= 2;
             let verdict = if ok {
                 "accepted"
             } else if frames == 0 {
                 "rejected (silent — controller asleep or unpaired?)"
             } else {
-                "rejected (streams but never quiet — junk slot?)"
+                "rejected (too few frames)"
             };
             diag::log(&format!(
                 "steamcontroller: iface {} probe: {frames} frames, {quiet} quiet, {flaps} button flaps -> {verdict}",
