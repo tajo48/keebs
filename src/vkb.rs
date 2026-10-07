@@ -47,6 +47,11 @@ pub enum Behavior {
     Paste,
     Emoji,
     Move,
+    /// Sticky Ctrl modifier (presses the real KEY_LEFTCTRL until toggled off
+    /// or the OSK closes) — same mechanism as Shift.
+    Ctrl,
+    /// Sticky Alt modifier, same mechanism.
+    Alt,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -80,6 +85,9 @@ pub struct KeyDef {
     pub shift_keycode: Option<u16>,
     /// Draw the label with the DejaVu symbol-capable font (arrows etc.).
     pub symbol_font: bool,
+    /// Small grey controller-button hint ("X", "R2", …) drawn in a corner —
+    /// the textual stand-in for the Python app's button-hint icons.
+    pub hint: Option<&'static str>,
 }
 
 const fn key(label: &'static str, shifted: Option<&'static str>, keycode: u16) -> KeyDef {
@@ -96,6 +104,7 @@ const fn key(label: &'static str, shifted: Option<&'static str>, keycode: u16) -
         glyph: None,
         shift_keycode: None,
         symbol_font: false,
+        hint: None,
     }
 }
 
@@ -140,7 +149,15 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("=", Some("+"), 13),
             KeyDef {
                 glyph: Some("\u{232B}"), // ⌫
-                ..mod_key("", K::KEY_BACKSPACE, Behavior::Generic, 1.4, Left, Bottom)
+                hint: Some("X"),
+                ..mod_key(
+                    "Bksp",
+                    K::KEY_BACKSPACE,
+                    Behavior::Generic,
+                    1.4,
+                    Left,
+                    Bottom,
+                )
             },
         ],
         vec![
@@ -184,12 +201,14 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("'", Some("\""), 40),
             KeyDef {
                 glyph: Some("\u{21B5}"), // ↵
+                hint: Some("R2"),
                 ..mod_key("Enter", K::KEY_ENTER, Behavior::Generic, 1.7, Right, Bottom)
             },
         ],
         vec![
             KeyDef {
                 glyph: Some("\u{21E7}"), // ⇧
+                hint: Some("L2"),
                 ..mod_key(
                     "Shift",
                     K::KEY_LEFTSHIFT,
@@ -211,6 +230,7 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("/", Some("?"), 53),
             KeyDef {
                 glyph: Some("\u{21E7}"), // ⇧
+                hint: Some("L2"),
                 ..mod_key(
                     "Shift",
                     K::KEY_RIGHTSHIFT,
@@ -222,13 +242,26 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
         ],
         vec![
+            mod_key(
+                "Ctrl",
+                K::KEY_LEFTCTRL,
+                Behavior::Ctrl,
+                1.0,
+                Align::Center,
+                VAlign::Center,
+            ),
+            mod_key(
+                "Alt",
+                K::KEY_LEFTALT,
+                Behavior::Alt,
+                1.0,
+                Align::Center,
+                VAlign::Center,
+            ),
             KeyDef {
-                glyph: Some("\u{263A}"), // ☺
-                ..mod_key("", 0, Behavior::Emoji, 1.2, Align::Center, VAlign::Center)
-            },
-            KeyDef {
-                width_weight: 6.0,
+                width_weight: 5.2,
                 align: Align::Left,
+                hint: Some("Y / R4 / R5"),
                 ..key("", None, K::KEY_SPACE)
             },
             KeyDef {
@@ -256,7 +289,8 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
             KeyDef {
                 glyph: Some("\u{2328}"), // ⌨
-                ..mod_key("Move", 0, Behavior::Move, 1.4, Align::Center, Top)
+                hint: Some("B"),
+                ..mod_key("Close", 0, Behavior::Move, 1.4, Align::Center, Top)
             },
         ],
     ]
@@ -481,6 +515,38 @@ impl Dispatcher<'_> {
         self.state.set_shift_held(new);
     }
 
+    /// Sticky Ctrl — presses the REAL KEY_LEFTCTRL until toggled off or the
+    /// OSK closes (release_held clears it), so the next key tap arrives as
+    /// Ctrl+key. Mirrors toggle_shift exactly.
+    pub fn toggle_ctrl(&self) {
+        let new = !self.state.is_ctrl_latched();
+        self.state.set_ctrl_latched(new);
+        if new {
+            self.kb.press_code(K::KEY_LEFTCTRL);
+            let mut hl = std::collections::HashSet::new();
+            hl.insert(K::KEY_LEFTCTRL);
+            self.state.set_highlighted(hl);
+        } else {
+            self.kb.release_code(K::KEY_LEFTCTRL);
+            self.state.set_highlighted(std::collections::HashSet::new());
+        }
+    }
+
+    /// Sticky Alt — same mechanism as toggle_ctrl.
+    pub fn toggle_alt(&self) {
+        let new = !self.state.is_alt_latched();
+        self.state.set_alt_latched(new);
+        if new {
+            self.kb.press_code(K::KEY_LEFTALT);
+            let mut hl = std::collections::HashSet::new();
+            hl.insert(K::KEY_LEFTALT);
+            self.state.set_highlighted(hl);
+        } else {
+            self.kb.release_code(K::KEY_LEFTALT);
+            self.state.set_highlighted(std::collections::HashSet::new());
+        }
+    }
+
     /// Force-release the OS Shift key so hiding the keyboard never leaves
     /// Shift stuck down.
     pub fn release_shift(&self) {
@@ -511,6 +577,8 @@ impl Dispatcher<'_> {
                 // next frame with no manual tracking.
             }
             Behavior::Shift => self.toggle_shift(),
+            Behavior::Ctrl => self.toggle_ctrl(),
+            Behavior::Alt => self.toggle_alt(),
             Behavior::Paste => {
                 // Shift -> Ctrl+C (copy), otherwise Ctrl+V (paste). Always
                 // release both shifts first so the chord isn't polluted by a

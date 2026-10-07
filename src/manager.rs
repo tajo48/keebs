@@ -76,8 +76,9 @@ impl Device {
     pub fn haptic_tick(&self) {
         match self {
             Device::Triton(sc) => {
+                let (f, g, c, ms) = env_quad("KEEBS_SC_TICK", [550, -6, 5, 18]);
                 let sc = Arc::clone(sc);
-                std::thread::spawn(move || sc.haptic_click(550, -6, 5, 18));
+                std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
             }
             Device::Deck(d) => {
                 let d = Arc::clone(d);
@@ -92,8 +93,9 @@ impl Device {
     pub fn pad_click_haptic(&self) {
         match self {
             Device::Triton(sc) => {
+                let (f, g, c, ms) = env_quad("KEEBS_SC_PADCLICK", [550, -5, 6, 18]);
                 let sc = Arc::clone(sc);
-                std::thread::spawn(move || sc.haptic_pad_click());
+                std::thread::spawn(move || sc.haptic_click(f, g, c, ms));
             }
             Device::Deck(d) => {
                 let d = Arc::clone(d);
@@ -236,11 +238,15 @@ impl ControllerManager {
     }
 
     pub fn release_held(&mut self, state: &OskState) {
-        // Make sure Shift/Enter/mouse buttons never stay stuck on the OS.
+        // Make sure Shift/Enter/Ctrl/Alt/mouse buttons never stay stuck on the
+        // OS (sticky OSK modifiers + L2/R2 roles).
         self.kb.release_code(K::KEY_LEFTSHIFT);
         self.kb.release_code(K::KEY_RIGHTSHIFT);
         self.kb.release_code(K::KEY_ENTER);
         self.kb.release_code(K::KEY_LEFTALT);
+        self.kb.release_code(K::KEY_LEFTCTRL);
+        state.set_ctrl_latched(false);
+        state.set_alt_latched(false);
         if self.mouse_l_active {
             self.mouse.release("right");
             self.mouse_l_active = false;
@@ -353,6 +359,33 @@ impl ControllerManager {
         let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
         state.set_pad_touched(lpad_touched, rpad_touched);
 
+        // R2: right pad touched -> key press (pad path); else -> Enter hold.
+        // Computed BEFORE the Shift hold below: Enter must never ride along
+        // with a held Shift (apps read Shift+Enter — chat clients turn it
+        // into a newline instead of send, which read as "enter is broken").
+        let rt_pressed = self.trigger_pressed(b, btn::RT, b.rtrig as i32);
+        let rt_was = self.rt_prev;
+        self.rt_prev = rt_pressed;
+        let rpad_touched = b.buttons & btn::RPADTOUCH != 0;
+        let enter_should_hold = rt_pressed && !rpad_touched;
+        if enter_should_hold && !self.enter_active {
+            // A sticky OSK Shift latches a REAL modifier; riding along with
+            // Enter it becomes Shift+Enter — a newline in chat apps instead
+            // of send. Drop the latch for the duration of the Enter hold.
+            if state.is_shift_latched() {
+                state.set_shift_latched(false);
+                state.set_shift_held(false);
+                self.kb.release_code(K::KEY_LEFTSHIFT);
+                self.kb.release_code(K::KEY_RIGHTSHIFT);
+            }
+            self.kb.press_code(K::KEY_ENTER);
+            self.enter_active = true;
+            dev.pad_click_haptic();
+        } else if !enter_should_hold && self.enter_active {
+            self.kb.release_code(K::KEY_ENTER);
+            self.enter_active = false;
+        }
+
         // L2 role, fixed at press: pad touched -> "click"; else -> "shift".
         let lt_pressed = self.trigger_pressed(b, btn::LT, b.ltrig as i32);
         let lt_was = self.lt_prev;
@@ -367,7 +400,9 @@ impl ControllerManager {
         }
         self.lt_prev = lt_pressed;
 
-        let shift_should_hold = lt_pressed && self.lt_role == Some(Role::Shift);
+        // Shift hold — suppressed while Enter is held (see above).
+        let shift_should_hold =
+            lt_pressed && self.lt_role == Some(Role::Shift) && !enter_should_hold;
         if shift_should_hold && !self.shift_active {
             self.kb.press_code(K::KEY_LEFTSHIFT);
             self.shift_active = true;
@@ -375,20 +410,6 @@ impl ControllerManager {
         } else if !shift_should_hold && self.shift_active {
             self.kb.release_code(K::KEY_LEFTSHIFT);
             self.shift_active = false;
-        }
-
-        // R2: right pad touched -> key press (pad path); else -> Enter hold.
-        let rt_pressed = self.trigger_pressed(b, btn::RT, b.rtrig as i32);
-        let rt_was = self.rt_prev;
-        self.rt_prev = rt_pressed;
-        let enter_should_hold = rt_pressed && !rpad_touched;
-        if enter_should_hold && !self.enter_active {
-            self.kb.press_code(K::KEY_ENTER);
-            self.enter_active = true;
-            dev.pad_click_haptic();
-        } else if !enter_should_hold && self.enter_active {
-            self.kb.release_code(K::KEY_ENTER);
-            self.enter_active = false;
         }
 
         // Mirror Shift state to the renderer (OR in the mouse latch).
@@ -447,6 +468,15 @@ impl ControllerManager {
         if self.shift_active || state.is_shift_latched() {
             highlights.insert(K::KEY_LEFTSHIFT);
             highlights.insert(K::KEY_RIGHTSHIFT);
+        }
+        // Sticky OSK modifiers glow while latched (the per-frame set is the
+        // single source of truth — the latch-time set would be overwritten
+        // here one frame later).
+        if state.is_ctrl_latched() {
+            highlights.insert(K::KEY_LEFTCTRL);
+        }
+        if state.is_alt_latched() {
+            highlights.insert(K::KEY_LEFTALT);
         }
         if l3_pressed && !steam_now {
             highlights.insert(K::KEY_CAPSLOCK);
@@ -545,12 +575,20 @@ impl ControllerManager {
             return;
         }
 
-        // Touchpad pointers (absolute coords in OSK-window space).
+        // Touchpad pointers (absolute coords in OSK-window space), CLAMPED
+        // to the window: an over-gain pad must saturate at the edges, never
+        // place the pointer outside the keyboard (dead clicks + imprecise
+        // typing).
         let (w, h) = state.abs_dims();
-        let lx = adjust_raw(b.lpad_x as f32, 0.25, w, 6.0 / 5.0, 0x20000 as f32);
-        let ly = adjust_raw(b.lpad_y as f32, 0.5, h, -(6.0 / 5.0), 0x10000 as f32);
-        let rx = adjust_raw(b.rpad_x as f32, 0.75, w, 6.0 / 5.0, 0x20000 as f32);
-        let ry = adjust_raw(b.rpad_y as f32, 0.5, h, -(6.0 / 5.0), 0x10000 as f32);
+        let gain = pad_gain();
+        let lx =
+            adjust_raw(b.lpad_x as f32 * gain, 0.25, w, 6.0 / 5.0, 0x20000 as f32).clamp(0.0, w);
+        let ly =
+            adjust_raw(b.lpad_y as f32 * gain, 0.5, h, -(6.0 / 5.0), 0x10000 as f32).clamp(0.0, h);
+        let rx =
+            adjust_raw(b.rpad_x as f32 * gain, 0.75, w, 6.0 / 5.0, 0x20000 as f32).clamp(0.0, w);
+        let ry =
+            adjust_raw(b.rpad_y as f32 * gain, 0.5, h, -(6.0 / 5.0), 0x10000 as f32).clamp(0.0, h);
         let left = self.handle_pad_input(
             state,
             dev,
@@ -752,7 +790,41 @@ impl ControllerManager {
     }
 }
 
-/// Which controller the manager is currently bound to (multi-device
+/// Pad→screen pointer gain (`KEEBS_PAD_GAIN`, default 2.0). The Python
+/// abs_max constants (0x20000/0x10000) assume pads with a larger raw range
+/// than the Deck/SC 2026 report — without extra gain the pads covered less
+/// than half the window. Tune live: `KEEBS_PAD_GAIN=3 nix run .#keebs`.
+fn pad_gain() -> f32 {
+    static G: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *G.get_or_init(|| {
+        std::env::var("KEEBS_PAD_GAIN")
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .filter(|v| (0.05..=20.0).contains(v))
+            .unwrap_or(1.5)
+    })
+}
+
+/// SC 2026 haptic tuning (`KEEBS_SC_TICK` / `KEEBS_SC_PADCLICK`, format
+/// "freq,gain,count,ms") — the Deck's haptics are firmware-native and stay
+/// untouched. Gain is a signed int8: nearer +127 = louder.
+fn env_quad(name: &str, default: [i64; 4]) -> (u32, i8, u16, u64) {
+    let raw = std::env::var(name).unwrap_or_default();
+    let mut v = default;
+    for (i, part) in raw.split(',').enumerate().take(4) {
+        if let Ok(x) = part.trim().parse::<i64>() {
+            v[i] = x;
+        }
+    }
+    (
+        v[0].clamp(1, 100_000) as u32,
+        v[1].clamp(-127, 127) as i8,
+        v[2].clamp(1, 0xFFFF) as u16,
+        v[3].clamp(0, 10_000) as u64,
+    )
+}
+
+/// Which controller the manager is currently bound to (multi-device support:
 /// support: every attached controller gets a reader thread; the manager
 /// follows the one actually in use, with hysteresis against mid-chord theft).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

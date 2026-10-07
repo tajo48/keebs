@@ -42,6 +42,21 @@ font); it also listens for the mouse in case you want to click-type:
 Mouse also works on the OSK directly: hover highlights, left-click presses,
 right-click = Shift, back/forward buttons = Backspace/Space.
 
+The bottom row has sticky **Ctrl** and **Alt** keys (click once — the real
+modifier is held and the key highlights — then tap keys; click again or
+close the keyboard to release).
+
+### Live tuning (environment variables)
+
+| Variable | Default | What |
+|---|---|---|
+| `KEEBS_PAD_GAIN` | `1.5` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
+| `KEEBS_SC_TICK` | `550,-6,5,18` | SC 2026 UI tick: `freq,gain,count,ms` (gain −127..127, higher = louder) |
+| `KEEBS_SC_PADCLICK` | `550,-5,6,18` | SC 2026 pad-click buzz, same format |
+
+Example: `KEEBS_PAD_GAIN=3 KEEBS_SC_TICK=800,-3,3,12 nix run .#keebs`
+(The Deck's haptics are firmware-native and are never overridden.)
+
 **Multiple controllers:** every attached device (Deck / SC 2026 / SC 2015)
 gets its own reader; the OSK binds to whichever controller you actually
 touch (300 ms hysteresis — a device in use can't be stolen mid-chord), and

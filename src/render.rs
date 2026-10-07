@@ -438,6 +438,19 @@ impl Screen {
                 };
                 self.draw_symbol(glyph, &key, text_color, ga, gv);
             }
+
+            // Controller-button hint ("X", "R2", …) — small, grey, top-right.
+            if let Some(hint) = kd.hint {
+                self.draw_label(
+                    hint,
+                    kd,
+                    &key,
+                    SHADOW_LABEL,
+                    Align::Right,
+                    VAlign::Top,
+                    18.0,
+                );
+            }
         }
 
         // Pointer dots: show where each finger is on the trackpads
