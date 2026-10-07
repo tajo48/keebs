@@ -14,8 +14,12 @@ use crate::stop::StopFlag;
 use crate::vkb::{Dispatcher, KEY_REPEAT_DELAY, KEY_REPEAT_INTERVAL, VirtualKeyboard};
 
 const ACTIVE_FPS: f32 = 120.0;
-const IDLE_FPS: f32 = 15.0;
+const VISIBLE_IDLE_FPS: f32 = 60.0;
+const HIDDEN_FPS: f32 = 15.0;
 const IDLE_GRACE: f32 = 0.4;
+/// Topmost re-assert + caps refresh cadence. The caps query is an X11
+/// round-trip, so it lives here — never per frame.
+const SLOW_TICK_MS: u64 = 250;
 
 pub fn run(stop: Arc<StopFlag>) {
     // Force X11/XWayland like the Python app's effective environment:
@@ -66,12 +70,18 @@ pub fn run(stop: Arc<StopFlag>) {
             return;
         }
     };
+    // Injected CapsLock flips the glyphs immediately (the X mask may lag one
+    // tick; the 250ms refresh below self-heals regardless).
+    {
+        let st = Arc::clone(&state);
+        kb.set_caps_hook(Box::new(move || st.refresh_caps()));
+    }
 
     let mut was_visible = false;
     let mut current_fps = ACTIVE_FPS;
     let mut last_active = Instant::now();
     let mut limiter = FrameLimiter::new(ACTIVE_FPS);
-    let mut next_topmost = Instant::now();
+    let mut next_slow_tick = Instant::now();
     // The first motion event after open just records the anchor (see adusk.py).
     let mut mouse_anchor: Option<(i32, i32)> = None;
     let mut mouse_repeat_at: Option<Instant> = None;
@@ -150,6 +160,7 @@ pub fn run(stop: Arc<StopFlag>) {
             if cur_visible {
                 screen.show();
                 mouse_anchor = None; // re-prime: opening fires a spurious motion
+                state.refresh_caps();
             } else {
                 Dispatcher {
                     kb: &kb,
@@ -164,10 +175,12 @@ pub fn run(stop: Arc<StopFlag>) {
         }
 
         if cur_visible {
-            // Compositors drop topmost when other windows raise — re-assert.
-            if Instant::now() >= next_topmost {
+            // Topmost re-assert + caps refresh on a slow tick. Compositors
+            // drop topmost when other windows raise — re-assert.
+            if Instant::now() >= next_slow_tick {
                 screen.assert_topmost();
-                next_topmost = Instant::now() + Duration::from_millis(500);
+                state.refresh_caps();
+                next_slow_tick = Instant::now() + Duration::from_millis(SLOW_TICK_MS);
             }
             // DPAD / left-stick cursor steps (stick moves buzz on switch).
             let dpad_steps = state.drain_dpad_queue();
@@ -243,14 +256,18 @@ pub fn run(stop: Arc<StopFlag>) {
             state.drain_click_queue();
         }
 
-        // Adaptive FPS: fast while active, slow when idle (grace period).
+        // Adaptive FPS: fast while active, 60 while visible-idle (key clicks
+        // must not sit in the queue for a 15fps frame — that read as typing
+        // lag), slow only while hidden.
         if activity {
             last_active = Instant::now();
         }
-        let desired_fps = if last_active.elapsed().as_secs_f32() < IDLE_GRACE {
+        let desired_fps = if !cur_visible {
+            HIDDEN_FPS
+        } else if last_active.elapsed().as_secs_f32() < IDLE_GRACE {
             ACTIVE_FPS
         } else {
-            IDLE_FPS
+            VISIBLE_IDLE_FPS
         };
         if desired_fps != current_fps {
             limiter.set_fps(desired_fps);

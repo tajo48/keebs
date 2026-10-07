@@ -708,9 +708,16 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
             absence_noted = false;
             // Publish the haptic hooks so the main thread can buzz on each
             // dispatched key (the Python state.set_haptic_tick equivalent).
+            // The buzz runs on a throwaway thread: the render thread calls
+            // this per dispatched key, and the write would otherwise contend
+            // on the device mutex the input thread holds across blocking
+            // reads (up to one read-timeout of typing lag per keypress).
             {
                 let dev = device.clone();
-                state.set_haptic_tick(Arc::new(move || dev.haptic_tick()));
+                state.set_haptic_tick(Arc::new(move || {
+                    let dev = dev.clone();
+                    std::thread::spawn(move || dev.haptic_tick());
+                }));
             }
             match &device {
                 Device::Deck(d) => {

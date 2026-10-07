@@ -444,9 +444,12 @@ type XGetWMHintsFn = unsafe extern "C" fn(*mut c_void, u64) -> *mut XWMHints;
 type XSetWMHintsFn = unsafe extern "C" fn(*mut c_void, u64, *mut XWMHints) -> i32;
 type XFreeFn = unsafe extern "C" fn(*mut c_void);
 type XFlushFn = unsafe extern "C" fn(*mut c_void) -> i32;
+type XRaiseWindowFn = unsafe extern "C" fn(*mut c_void, u64);
 
 /// True if the SDL window is backed by X11/XWayland (display property
 /// present). Used for logging + deciding whether WM hints can apply.
+// Opaque SDL handles are passed through to SDL's C ABI, never dereferenced.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn window_is_x11(window: SdlWindow) -> bool {
     let s = sdl();
     unsafe {
@@ -465,6 +468,8 @@ pub fn window_is_x11(window: SdlWindow) -> bool {
 
 /// Best-effort: applies the no-focus WM hints when the SDL window is backed
 /// by X11/XWayland; silently does nothing otherwise (Wayland native).
+// Opaque SDL handles are passed through to SDL's C ABI, never dereferenced.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn make_window_no_focus(window: SdlWindow) {
     let s = sdl();
     unsafe {
@@ -487,6 +492,44 @@ pub fn make_window_no_focus(window: SdlWindow) {
     }
 }
 
+/// Best-effort: raise the window to the top of the X11 stack (XRaiseWindow
+/// on the window's own display). SDL's always-on-top flag only takes effect
+/// via the WM's state machine — a direct restack guarantees the window is on
+/// top the instant it maps, instead of up to one re-assert tick later.
+// Opaque SDL handles are passed through to SDL's C ABI, never dereferenced.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn raise_window(window: SdlWindow) {
+    let s = sdl();
+    unsafe {
+        let props = (s.get_window_properties)(window);
+        if props == 0 {
+            return;
+        }
+        let display = (s.get_pointer_property)(
+            props,
+            X11_DISPLAY_PROP.as_ptr() as *const c_char,
+            std::ptr::null_mut(),
+        );
+        let xid = (s.get_number_property)(props, X11_WINDOW_PROP.as_ptr() as *const c_char, 0);
+        if display.is_null() || xid <= 0 {
+            return; // not an X11 window
+        }
+        let Ok(lib) = Library::new("libX11.so.6") else {
+            return;
+        };
+        let raise: XRaiseWindowFn = match lib.get(b"XRaiseWindow\0") {
+            Ok(f) => *f,
+            Err(_) => return,
+        };
+        let flush: XFlushFn = match lib.get(b"XFlush\0") {
+            Ok(f) => *f,
+            Err(_) => return,
+        };
+        raise(display, xid as u64);
+        flush(display);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Caps Lock state (port of adusk.state `_x11_caps` + `is_caps_on`): read the
 // keyboard modifier mask via XQueryPointer on the root window — LockMask =
@@ -501,6 +544,7 @@ struct X11Caps {
     _lib: Library,
     disp: *mut c_void,
     root: u64,
+    query: XQueryPointerFn,
 }
 unsafe impl Send for X11Caps {}
 unsafe impl Sync for X11Caps {}
@@ -531,10 +575,12 @@ fn x11_caps_conn() -> Option<&'static X11Caps> {
             if disp.is_null() {
                 return None;
             }
+            let query: XQueryPointerFn = *lib.get(b"XQueryPointer\0").ok()?;
             Some(X11Caps {
                 _lib: lib,
                 disp,
                 root: root_fn(disp),
+                query,
             })
         })
         .as_ref()
@@ -547,10 +593,7 @@ pub fn x11_caps_on() -> bool {
     };
     // SAFETY: standard core-X11 query on our dedicated connection.
     unsafe {
-        let query: XQueryPointerFn = match caps._lib.get(b"XQueryPointer\0") {
-            Ok(f) => *f,
-            Err(_) => return false,
-        };
+        let query = caps.query;
         let mut rr: u64 = 0;
         let mut cr: u64 = 0;
         let mut rx: i32 = 0;
@@ -610,6 +653,8 @@ unsafe fn x11_disable_input(display: *mut c_void, xid: u64) -> bool {
 
 /// Convenience: render UTF-8 text to a blended surface, upload as a texture,
 /// destroy the surface. Returns (texture, w, h).
+// Opaque SDL handles are passed through to SDL's C ABI, never dereferenced.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn render_text_texture(
     renderer: SdlRenderer,
     font: TtfFont,

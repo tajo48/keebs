@@ -223,10 +223,15 @@ impl Screen {
     pub fn show(&self) {
         unsafe {
             let s = sdl();
-            // Created with SDL_WINDOW_ALWAYS_ON_TOP, but re-assert it at map
-            // time anyway — same as adusk.py re-asserting topmost on show.
-            (s.set_window_always_on_top)(self.window, true);
             (s.show_window)(self.window);
+            // Flip topmost AFTER mapping: WMs can ignore state changes on
+            // unmapped windows, so setting it before show only sticks on the
+            // next re-assert tick (the "reopen buried" bug).
+            (s.set_window_always_on_top)(self.window, true);
+            // Direct restack so it's on top the instant it maps, and re-apply
+            // the no-focus hints in case the WM reset them at map time.
+            sdl3::raise_window(self.window);
+            sdl3::make_window_no_focus(self.window);
         }
     }
 
@@ -536,12 +541,15 @@ impl Screen {
         }
     }
 
-    /// Re-assert the always-on-top hint; compositors/WMs drop topmost when
-    /// other windows raise, so the main loop calls this periodically (same
-    /// reason adusk.py has `_reassert_topmost`).
+    /// Re-assert the always-on-top hint AND directly restack; compositors/WMs
+    /// drop topmost when other windows raise (or ignore the state after
+    /// repeated hide/show cycles), so the main loop calls this periodically
+    /// (same reason adusk.py has `_reassert_topmost`).
     pub fn assert_topmost(&self) {
         unsafe {
-            (sdl().set_window_always_on_top)(self.window, true);
+            let s = sdl();
+            (s.set_window_always_on_top)(self.window, true);
+            sdl3::raise_window(self.window);
         }
     }
 

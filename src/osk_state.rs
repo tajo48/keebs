@@ -71,6 +71,10 @@ pub struct OskState {
     shift_held: AtomicBool,
     shift_latched: AtomicBool,
     emoji_open: AtomicBool,
+    /// Cached Caps Lock state — the live X11 query is a synchronous
+    /// round-trip and must never run per render frame (it stalled typing).
+    /// Refreshed on a slow tick and whenever CapsLock is injected.
+    caps_on: AtomicBool,
     highlighted: Mutex<HashSet<u16>>,
     lpad_touched: AtomicBool,
     rpad_touched: AtomicBool,
@@ -94,6 +98,7 @@ impl OskState {
             shift_held: AtomicBool::new(false),
             shift_latched: AtomicBool::new(false),
             emoji_open: AtomicBool::new(false),
+            caps_on: AtomicBool::new(false),
             highlighted: Mutex::new(HashSet::new()),
             lpad_touched: AtomicBool::new(false),
             rpad_touched: AtomicBool::new(false),
@@ -134,11 +139,19 @@ impl OskState {
     pub fn set_shift_latched(&self, v: bool) {
         self.shift_latched.store(v, Ordering::SeqCst);
     }
-    /// Live Caps Lock state read from the X server's modifier mask
-    /// (adusk.state `is_caps_on`): physical and injected CapsLock stay in
-    /// sync automatically.
+    /// Cached Caps Lock state (adusk.state `is_caps_on`): physical and
+    /// injected CapsLock stay in sync via periodic refresh — see
+    /// `refresh_caps` in the main loop. Reads must stay cheap: this runs
+    /// every render frame.
     pub fn is_caps_on(&self) -> bool {
-        crate::sdl3::x11_caps_on()
+        self.caps_on.load(Ordering::SeqCst)
+    }
+    /// Re-read Caps Lock from the X server's modifier mask. Called on the
+    /// slow tick (~4 Hz) and right after a CapsLock injection, never per
+    /// frame — the X query is a blocking round-trip.
+    pub fn refresh_caps(&self) {
+        self.caps_on
+            .store(crate::sdl3::x11_caps_on(), Ordering::SeqCst);
     }
     pub fn is_emoji_open(&self) -> bool {
         self.emoji_open.load(Ordering::SeqCst)
