@@ -89,7 +89,11 @@ pub struct OskState {
 impl OskState {
     pub fn new() -> Self {
         Self {
-            visible: AtomicBool::new(true),
+            // Start HIDDEN — the Steam+X chord shows it. Starting visible put
+            // an always-on-top window over the bottom of the screen that ate
+            // physical mouse clicks (dispatching phantom OSK keys like
+            // 'Move') and made the app look broken from launch.
+            visible: AtomicBool::new(false),
             close_app: AtomicBool::new(false),
             width: AtomicUsize::new(1286),
             height: AtomicUsize::new(369),

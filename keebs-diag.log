@@ -1,0 +1,64 @@
+--- keebs pid 85742 ---
+osk: Deck reader attached
+deck: libusb session opened (iface 2)
+osk: Triton reader attached
+osk: [Deck] first frame: buttons=0x00000000 lt=0 rt=0 lpad=(0,0) rpad=(0,0) lstick=(-11,7) rstick=(31,2)
+steamcontroller: iface 2 probe: 107 frames, 76 quiet, 2 button flaps -> accepted
+steamcontroller: opened iface 2
+osk: [Triton] first frame: buttons=0x31000000 lt=0 rt=0 lpad=(0,0) rpad=(0,0) lstick=(62,1) rstick=(-12,47)
+osk: activation [Triton]: buttons=0x31000000 lt=0 rt=0 lstick=(62,1) rstick=(-12,47)
+osk: active controller: Triton
+osk: [Triton] +STEAM --
+osk: [Triton] +X --
+osk: [Triton] +- -X
+osk: [Triton] +- -STEAM
+osk: [Triton] +RPADTOUCH --
+osk: [Triton] +- -LPADJOY_TOUCH
+osk: [Triton] +LPADTOUCH --
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +LPADTOUCH --
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +LPADTOUCH --
+osk: [Triton] +RPAD --
+osk: dispatch pad-click 'Move' (4,5)
+osk: [Triton] +- -RPAD
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +- -RPADTOUCH
+osk: [Triton] +LPADTOUCH --
+osk: [Deck] telemetry: 1238 frames, 0 with buttons
+osk: [Triton] telemetry: 1187 frames, 1156 with buttons
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +RPADTOUCH --
+osk: [Triton] +LPADTOUCH --
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +- -RPADTOUCH
+osk: [Triton] +STEAM --
+osk: [Triton] +LPADJOY_TOUCH --
+osk: [Triton] +- -LGRIP_REST
+osk: [Triton] +X --
+osk: [Triton] +- -X
+osk: [Triton] +- -STEAM
+osk: [Triton] +LGRIP_REST -LPADJOY_TOUCH
+osk: [Triton] +RPADTOUCH --
+osk: [Triton] +LPADTOUCH --
+osk: [Triton] +- -RPADTOUCH
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +- -RGRIP_REST
+osk: [Triton] +- -LGRIP_REST
+osk: [Triton] +LPADTOUCH --
+osk: [Triton] +RPADTOUCH --
+osk: [Triton] +LGRIP_REST --
+osk: [Triton] +RGRIP_REST --
+osk: [Deck] telemetry: 1274 frames, 0 with buttons
+osk: [Triton] telemetry: 1344 frames, 738 with buttons
+osk: [Triton] +RPAD --
+osk: dispatch pad-click 'Move' (4,5)
+osk: [Triton] +- -LPADTOUCH
+osk: [Triton] +- -RPAD
+osk: [Triton] +- -RPADTOUCH
+osk: [Triton] +- -RGRIP_REST
+osk: [Triton] +RGRIP_REST --
+osk: [Triton] +- -RGRIP_REST
+osk: [Triton] +RGRIP_REST --
+osk: [Triton] +- -RGRIP_REST
+osk: [Triton] +- -LGRIP_REST

@@ -412,6 +412,23 @@ impl Keyboard {
         self.release_code(code);
     }
 
+    /// Lift every injectable key (idempotent). Runs on drop so the app can
+    /// never leave a key logically held in the X server's global state —
+    /// a stuck uinput Backspace makes the PHYSICAL Backspace dead until the
+    /// app exits (observed in the wild).
+    pub fn release_all(&self) {
+        let codes: Vec<u16> = KEYMAP
+            .iter()
+            .map(|(_, c)| *c)
+            .filter(|c| *c > 0 && *c < 0x2FF)
+            .collect();
+        let dev = self.dev.lock().unwrap();
+        for c in codes {
+            let _ = dev.emit(EV_KEY, c, 0);
+        }
+        let _ = dev.syn();
+    }
+
     fn emit_code(&self, code: u16, value: i32) {
         let caps = code == crate::uinput::keys::KEY_CAPSLOCK && value == 1;
         {
@@ -426,6 +443,12 @@ impl Keyboard {
                 hook();
             }
         }
+    }
+}
+
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        self.release_all();
     }
 }
 
@@ -499,6 +522,17 @@ impl Mouse {
             if let Err(e) = dev.emit(EV_REL, REL_WHEEL, dy) {
                 eprintln!("uinput: scroll failed: {e}");
             }
+        }
+        let _ = dev.syn();
+    }
+}
+
+impl Drop for Mouse {
+    fn drop(&mut self) {
+        // Lift any held button — same stuck-state rationale as Keyboard.
+        let dev = self.dev.lock().unwrap();
+        for b in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE] {
+            let _ = dev.emit(EV_KEY, b, 0);
         }
         let _ = dev.syn();
     }

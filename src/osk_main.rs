@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::diag;
 use crate::manager;
 use crate::osk_state::OskState;
 use crate::render::{FrameLimiter, Screen};
@@ -202,7 +203,7 @@ pub fn run(stop: Arc<StopFlag>) {
                         continue;
                     }
                     let kd = &vkb.keys[r][c];
-                    println!("osk: dispatch pad-click '{}' ({r},{c})", kd.label);
+                    diag::log(&format!("osk: dispatch pad-click '{}' ({r},{c})", kd.label));
                     Dispatcher {
                         kb: &kb,
                         state: &state,
@@ -234,7 +235,7 @@ pub fn run(stop: Arc<StopFlag>) {
                         continue;
                     }
                     let kd = &vkb.keys[r][c];
-                    println!("osk: dispatch key '{}' ({r},{c})", kd.label);
+                    diag::log(&format!("osk: dispatch key '{}' ({r},{c})", kd.label));
                     Dispatcher {
                         kb: &kb,
                         state: &state,

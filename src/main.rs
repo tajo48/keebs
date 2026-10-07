@@ -6,25 +6,27 @@
 //!
 //! `--listener`: phase-1 passive device listener (prints button edges and
 //! battery, LGRIP1/L4 -> Left Shift via uinput).
+//! `--probe-sc`: guided calibration for the classic (2015) Steam Controller.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use keebs::classic::{self, ClassicController};
 use keebs::deck::{self, DeckController};
 use keebs::events::EventMapper;
 use keebs::sc::{self, SciInput, buttons};
 use keebs::stop::StopFlag;
 use keebs::triton::{self, SteamController};
 
-fn report_edges(prev: &mut u32, sci: &SciInput) {
+fn report_edges(dev: &str, prev: &mut u32, sci: &SciInput) {
     let xor = *prev ^ sci.buttons;
     let pressed = xor & sci.buttons;
     let released = xor & *prev;
     if pressed != 0 {
-        println!("  +{}", sc::button_names(pressed).join("+"));
+        println!("  [{dev}] +{}", sc::button_names(pressed).join("+"));
     }
     if released != 0 {
-        println!("  -{}", sc::button_names(released).join("+"));
+        println!("  [{dev}] -{}", sc::button_names(released).join("+"));
     }
     *prev = sci.buttons;
 }
@@ -52,10 +54,11 @@ fn spawn_battery_printer(ctrl: &Arc<SteamController>) {
     });
 }
 
-fn listener(stop: Arc<StopFlag>) {
-    let mut mapper = match EventMapper::new() {
+/// Per-device uinput mapper (LGRIP1/L4 -> Left Shift, adusk parity).
+/// One per listener thread: EventMapper owns a Keyboard and is not Sync.
+fn make_mapper() -> Option<EventMapper> {
+    match EventMapper::new() {
         Ok(mut m) => {
-            // Parity with adusk: LGRIP1 (L4 paddle) -> Left Shift.
             m.set_button_action(buttons::LGRIP1, "KEY_LEFTSHIFT");
             Some(m)
         }
@@ -63,63 +66,142 @@ fn listener(stop: Arc<StopFlag>) {
             eprintln!("uinput init failed ({e}); running print-only");
             None
         }
-    };
-    println!(
-        "injection: {}",
-        if mapper.is_some() {
-            "on (LGRIP1/L4 -> LeftShift)"
-        } else {
-            "off"
-        }
-    );
+    }
+}
 
-    // passive=true = desktop/chord-watcher posture: firmware lizard stays ON.
-    let passive = true;
+/// One listener thread per device kind — ALL attached devices print edges
+/// simultaneously (the old version was Deck-first and hid the Steam
+/// Controller whenever a Deck was tethered). passive=true: lizard stays ON.
+fn listener(stop: Arc<StopFlag>) {
+    println!("injection: on (LGRIP1/L4 -> LeftShift, per device)");
+
+    // Deck thread.
+    {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            loop {
+                if !deck::deck_present() {
+                    if stop.wait(Duration::from_secs(2)) {
+                        break;
+                    }
+                    continue;
+                }
+                keebs::diag::log("device: Steam Deck (USB tethered, 28de:1205)");
+                let Ok(ctrl) = DeckController::new(true, None, Arc::clone(&stop)) else {
+                    if stop.wait(Duration::from_secs(2)) {
+                        break;
+                    }
+                    continue;
+                };
+                let ctrl = Arc::new(ctrl);
+                let mut prev = 0u32;
+                let mut mapper = make_mapper();
+                ctrl.run(&mut |_c, sci| {
+                    report_edges("deck", &mut prev, sci);
+                    if let Some(m) = mapper.as_mut() {
+                        m.process(sci);
+                    }
+                });
+                if stop.wait(Duration::from_secs(2)) {
+                    break;
+                }
+            }
+        });
+    }
+
+    // Triton (SC 2026) thread, with battery printer.
+    {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            loop {
+                if !triton::triton_present() {
+                    if stop.wait(Duration::from_secs(2)) {
+                        break;
+                    }
+                    continue;
+                }
+                keebs::diag::log("device: Steam Controller 2026 (dongle/wired)");
+                let Ok(ctrl) = SteamController::new(true, Arc::clone(&stop)) else {
+                    if stop.wait(Duration::from_secs(2)) {
+                        break;
+                    }
+                    continue;
+                };
+                let ctrl = Arc::new(ctrl);
+                spawn_battery_printer(&ctrl);
+                let mut prev = 0u32;
+                let mut mapper = make_mapper();
+                ctrl.run(&mut |_c, sci| {
+                    report_edges("sc2026", &mut prev, sci);
+                    if let Some(m) = mapper.as_mut() {
+                        m.process(sci);
+                    }
+                });
+                if stop.wait(Duration::from_secs(2)) {
+                    break;
+                }
+            }
+        });
+    }
+
+    // Classic (SC 2015) thread.
+    {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            loop {
+                if !classic::classic_present() {
+                    if stop.wait(Duration::from_secs(2)) {
+                        break;
+                    }
+                    continue;
+                }
+                keebs::diag::log(
+                    "device: Steam Controller 2015 (dongle 28de:1102 / wired 28de:1142)",
+                );
+                let Ok(ctrl) = ClassicController::new(true, Arc::clone(&stop)) else {
+                    if stop.wait(Duration::from_secs(2)) {
+                        break;
+                    }
+                    continue;
+                };
+                let ctrl = Arc::new(ctrl);
+                // No battery printer: the classic battery report id is uncalibrated.
+                let mut prev = 0u32;
+                let mut mapper = make_mapper();
+                ctrl.run(&mut |_c, sci| {
+                    report_edges("sc2015", &mut prev, sci);
+                    if let Some(m) = mapper.as_mut() {
+                        m.process(sci);
+                    }
+                });
+                if stop.wait(Duration::from_secs(2)) {
+                    break;
+                }
+            }
+        });
+    }
 
     while !stop.is_set() {
-        if deck::deck_present() {
-            println!("device: Steam Deck (USB tethered, 28de:1205)");
-            let ctrl = Arc::new(
-                DeckController::new(passive, None, Arc::clone(&stop)).expect("hidapi init failed"),
-            );
-            let mut prev = 0u32;
-            ctrl.run(&mut |_c, sci| {
-                report_edges(&mut prev, sci);
-                if let Some(m) = mapper.as_mut() {
-                    m.process(sci);
-                }
-            });
-        } else if triton::triton_present() {
-            println!("device: Steam Controller 2026 (dongle/wired)");
-            let ctrl = Arc::new(
-                SteamController::new(passive, Arc::clone(&stop)).expect("hidapi init failed"),
-            );
-            spawn_battery_printer(&ctrl);
-            let mut prev = 0u32;
-            ctrl.run(&mut |_c, sci| {
-                report_edges(&mut prev, sci);
-                if let Some(m) = mapper.as_mut() {
-                    m.process(sci);
-                }
-            });
-        } else {
-            println!("no controller present; retrying every 2 s…");
-        }
-        if stop.wait(Duration::from_secs(2)) {
-            break;
-        }
+        std::thread::sleep(Duration::from_millis(200));
     }
     println!("bye");
 }
 
 fn main() {
+    keebs::diag::start();
     let listener_mode = std::env::args().any(|a| a == "--listener");
+    let probe_mode = std::env::args().any(|a| a == "--probe-sc");
     let stop = Arc::new(StopFlag::new());
     {
         let stop = Arc::clone(&stop);
         if let Err(e) = ctrlc::set_handler(move || stop.signal()) {
             eprintln!("warning: no Ctrl-C handler ({e})");
         }
+    }
+
+    if probe_mode {
+        classic::probe();
+        return;
     }
 
     if listener_mode {

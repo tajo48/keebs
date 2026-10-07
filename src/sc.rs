@@ -10,6 +10,8 @@ pub const VENDOR_ID: u16 = 0x28DE;
 pub const PRODUCT_ID_PROTEUS: u16 = 0x1304; // Triton wireless dongle ("puck")
 pub const PRODUCT_ID_WIRED: u16 = 0x1302; // Steam Controller 2026 wired
 pub const PRODUCT_ID_DECK: u16 = 0x1205; // USB-C-tethered Steam Deck
+pub const PRODUCT_ID_DONGLE: u16 = 0x1102; // Steam Controller 2015 wireless dongle
+pub const PRODUCT_ID_WIRED_2015: u16 = 0x1142; // Steam Controller 2015 wired
 
 /// Triton input-state report type (`SCStatus.INPUT`).
 pub const SC_STATUS_INPUT: u16 = 0x42;
@@ -453,10 +455,214 @@ pub fn parse_deck(data: &[u8], centers: [i16; 4]) -> Option<SciInput> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Classic Steam Controller (2015) parsing.
+// ---------------------------------------------------------------------------
+//
+// PROVISIONAL LAYOUT — assembled from the ynsta/steamcontroller library and
+// SDL's classic `SteamControllerStateReport_t`, NOT yet calibrated against
+// live hardware (unlike the Deck/Triton tables above). Run `keebs --probe-sc`
+// and fix the offsets below if the decode disagrees:
+//
+//   byte 0      status (0x01 = input frame)
+//   byte 1      seq
+//   bytes 4-7   buttons u32le (classic masks, see `classic_buttons`)
+//   byte 8      LT analog u8 (0..255)
+//   byte 9      RT analog u8 (0..255)
+//   bytes 12-15 LPAD x/y i16le
+//   bytes 16-19 RPAD x/y i16le
+//   (no sticks — the 2015 controller has none; stick fields stay 0)
+
+pub const CLASSIC_INPUT_STATUS: u8 = 0x01;
+pub const CLASSIC_INPUT_LEN: usize = 64;
+
+/// Raw classic button masks inside the u32 at bytes 4-7 (provisional — same
+/// caveat as the layout above). These are the values the ynsta library used;
+/// `RPADTOUCH` is the known compound quirk (0x1800_0000 shares its low bit
+/// with `LPADTOUCH`), handled in `parse_classic` instead of the table.
+pub mod classic_buttons {
+    pub const A: u32 = 0x0000_0002;
+    pub const B: u32 = 0x0000_0004;
+    pub const X: u32 = 0x0000_0008;
+    pub const Y: u32 = 0x0000_0010;
+    pub const LB: u32 = 0x0000_0020;
+    pub const RB: u32 = 0x0000_0040;
+    pub const LT: u32 = 0x0000_0080;
+    pub const RT: u32 = 0x0000_0100;
+    pub const BACK: u32 = 0x0000_1000; // "SELECT" — maps onto VIEW
+    pub const START: u32 = 0x0000_2000;
+    pub const LGRIP: u32 = 0x0000_4000;
+    pub const RGRIP: u32 = 0x0000_8000;
+    pub const STEAM: u32 = 0x0010_0000;
+    pub const LPADTOUCH: u32 = 0x0800_0000;
+    pub const RPADTOUCH_FULL: u32 = 0x1800_0000;
+    pub const LPAD: u32 = 0x1000_0000;
+    pub const RPAD: u32 = 0x2000_0000;
+}
+
+/// (classic raw mask -> our `buttons::*` mask). Single bits only; compound
+/// masks (RPADTOUCH) are special-cased in `parse_classic`.
+const CLASSIC_BUTTON_MAP: [(u32, u32); 15] = [
+    (classic_buttons::A, buttons::A),
+    (classic_buttons::B, buttons::B),
+    (classic_buttons::X, buttons::X),
+    (classic_buttons::Y, buttons::Y),
+    (classic_buttons::LB, buttons::LB),
+    (classic_buttons::RB, buttons::RB),
+    (classic_buttons::LT, buttons::LT),
+    (classic_buttons::RT, buttons::RT),
+    (classic_buttons::BACK, buttons::VIEW),
+    (classic_buttons::START, buttons::START),
+    (classic_buttons::LGRIP, buttons::LGRIP1),
+    (classic_buttons::RGRIP, buttons::RGRIP1),
+    (classic_buttons::STEAM, buttons::STEAM),
+    (classic_buttons::LPADTOUCH, buttons::LPADTOUCH),
+    (classic_buttons::LPAD, buttons::LPAD),
+];
+
+/// Classic lizard feature reports. Unlike Triton's `0x01`-framed settings
+/// reports, the classic protocol puts the command in the report ID itself:
+/// `87 03 08 <mode>` (0x07 = kb+mouse off, 0x03 = both on). These magic
+/// bytes are the ones the 2015-era drivers (Steam client, sc-controller,
+/// ynsta) used. Runtime writes are the documented norm on this hardware —
+/// the "persistence trap" note in `triton.rs` is Triton-specific.
+pub const CLASSIC_DISABLE_LIZARD_REPORT: [u8; 65] = {
+    let mut b = [0u8; 65];
+    b[0] = 0x87;
+    b[1] = 0x03;
+    b[2] = 0x08;
+    b[3] = 0x07;
+    b
+};
+pub const CLASSIC_ENABLE_LIZARD_REPORT: [u8; 65] = {
+    let mut b = [0u8; 65];
+    b[0] = 0x87;
+    b[1] = 0x03;
+    b[2] = 0x08;
+    b[3] = 0x03;
+    b
+};
+
+/// Parse one classic 64-byte 0x01 frame into a [`SciInput`]. Sticks stay 0
+/// (the 2015 controller has none — pads drive the OSK). Analog u8 triggers
+/// are scaled to the 0..32767 range the manager's `TRIGGER_THRESHOLD`
+/// expects (full pull = 0xFF<<7 = 32640).
+pub fn parse_classic(data: &[u8]) -> Option<SciInput> {
+    if data.len() < CLASSIC_INPUT_LEN || data[0] != CLASSIC_INPUT_STATUS {
+        return None;
+    }
+    let raw = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    let mut b = 0u32;
+    for &(classic, ours) in &CLASSIC_BUTTON_MAP {
+        if raw & classic != 0 {
+            b |= ours;
+        }
+    }
+    // Compound quirk: classic RPADTOUCH is 0x1800_0000 (its low bit is shared
+    // with LPADTOUCH), so match the full value, not any-bit.
+    if raw & classic_buttons::RPADTOUCH_FULL == classic_buttons::RPADTOUCH_FULL {
+        b |= buttons::RPADTOUCH;
+    }
+    if raw & classic_buttons::RPAD != 0 {
+        b |= buttons::RPAD;
+    }
+    let g = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]);
+    Some(SciInput {
+        status: SC_STATUS_INPUT,
+        seq: data[1],
+        buttons: b,
+        ltrig: (data[8] as i16) << 7,
+        rtrig: (data[9] as i16) << 7,
+        lpad_x: g(12),
+        lpad_y: g(14),
+        rpad_x: g(16),
+        rpad_y: g(18),
+        ..SCI_NULL
+    })
+}
+
 /// Cheap presence probe: every Valve product id currently enumerable on USB.
 pub fn present_product_ids(api: &hidapi::HidApi) -> HashSet<u16> {
     api.device_list()
         .filter(|d| d.vendor_id() == VENDOR_ID)
         .map(|d| d.product_id())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Locks the PROVISIONAL classic layout: if `--probe-sc` forces a table
+    /// fix, update this test along with the offsets above.
+    #[test]
+    fn parse_classic_maps_layout() {
+        let mut f = [0u8; 64];
+        f[0] = CLASSIC_INPUT_STATUS;
+        f[1] = 42; // seq
+        let raw = classic_buttons::A
+            | classic_buttons::B
+            | classic_buttons::X
+            | classic_buttons::Y
+            | classic_buttons::LB
+            | classic_buttons::RB
+            | classic_buttons::BACK
+            | classic_buttons::START
+            | classic_buttons::LGRIP
+            | classic_buttons::RGRIP
+            | classic_buttons::STEAM
+            | classic_buttons::LPADTOUCH
+            | classic_buttons::LPAD
+            | classic_buttons::RPADTOUCH_FULL
+            | classic_buttons::RPAD;
+        f[4..8].copy_from_slice(&raw.to_le_bytes());
+        f[8] = 0xFF; // LT fully pulled
+        f[9] = 0x40; // RT half pulled
+        f[12..14].copy_from_slice(&(-1000i16).to_le_bytes()); // lpad_x
+        f[14..16].copy_from_slice(&2000i16.to_le_bytes()); // lpad_y
+        f[16..18].copy_from_slice(&3000i16.to_le_bytes()); // rpad_x
+        f[18..20].copy_from_slice(&(-4000i16).to_le_bytes()); // rpad_y
+
+        let sci = parse_classic(&f).expect("valid frame");
+        assert_eq!(sci.status, SC_STATUS_INPUT);
+        assert_eq!(sci.seq, 42);
+        let expect_buttons = buttons::A
+            | buttons::B
+            | buttons::X
+            | buttons::Y
+            | buttons::LB
+            | buttons::RB
+            | buttons::VIEW
+            | buttons::START
+            | buttons::LGRIP1
+            | buttons::RGRIP1
+            | buttons::STEAM
+            | buttons::LPADTOUCH
+            | buttons::LPAD
+            | buttons::RPADTOUCH
+            | buttons::RPAD;
+        assert_eq!(sci.buttons, expect_buttons);
+        assert_eq!(sci.ltrig, 0xFF << 7);
+        assert_eq!(sci.rtrig, 0x40 << 7);
+        assert_eq!(sci.lpad_x, -1000);
+        assert_eq!(sci.lpad_y, 2000);
+        assert_eq!(sci.rpad_x, 3000);
+        assert_eq!(sci.rpad_y, -4000);
+        // No sticks on the 2015 hardware.
+        assert_eq!(
+            (sci.lstick_x, sci.lstick_y, sci.rstick_x, sci.rstick_y),
+            (0, 0, 0, 0)
+        );
+        // LT alone (analog, past the manager's threshold) must read as a
+        // digital press too — the OSK Shift role depends on it.
+        assert!(sci.ltrig >= 16384);
+    }
+
+    #[test]
+    fn parse_classic_rejects_bad_frames() {
+        assert!(parse_classic(&[0u8; 64]).is_none()); // wrong status byte
+        let mut f = [0u8; 64];
+        f[0] = CLASSIC_INPUT_STATUS;
+        assert!(parse_classic(&f[..32]).is_none()); // too short
+    }
 }

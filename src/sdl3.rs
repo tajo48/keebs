@@ -310,8 +310,10 @@ impl Sdl {
         const CORE: [&[u8]; 2] = [b"libSDL3.so.0\0", b"libSDL3.so\0"];
         const TTF: [&[u8]; 2] = [b"libSDL3_ttf.so.0\0", b"libSDL3_ttf.so\0"];
 
-        let core = load_first(&CORE).ok_or("could not load libSDL3 (pacman -S sdl3)?")?;
-        let ttf = load_first(&TTF).ok_or("could not load libSDL3_ttf (pacman -S sdl3_ttf)?")?;
+        let core = load_first(&CORE)
+            .ok_or("could not load libSDL3 (on nix: run inside `nix develop`, or use `nix run .#keebs` whose wrapper sets LD_LIBRARY_PATH)?")?;
+        let ttf = load_first(&TTF)
+            .ok_or("could not load libSDL3_ttf (on nix: run inside `nix develop`, or use `nix run .#keebs`)?")?;
 
         // SAFETY: symbol names/signatures match SDL 3.4.x / SDL3_ttf 3.2.x as
         // verified by the Python sdl3w shim on the same libs.

@@ -7,9 +7,13 @@
 //! with the tray/settings port).
 
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::classic::ClassicController;
 use crate::deck::DeckController;
+use crate::diag;
 use crate::events::EventMapper;
 use crate::osk_state::{Dir, InputState, OskState, Pointer};
 use crate::sc::{SCI_NULL, SciInput, buttons as btn};
@@ -40,6 +44,7 @@ const TRIGGER_THRESHOLD: i32 = 16384;
 pub enum Device {
     Triton(Arc<SteamController>),
     Deck(Arc<DeckController>),
+    Classic(Arc<ClassicController>),
 }
 
 impl Device {
@@ -47,6 +52,7 @@ impl Device {
         match self {
             Device::Triton(sc) => sc.set_lizard(enabled),
             Device::Deck(d) => d.set_lizard(enabled),
+            Device::Classic(c) => c.set_lizard(enabled),
         }
     }
 
@@ -61,6 +67,9 @@ impl Device {
             Device::Deck(d) => {
                 d.haptic_click(550, -6, 5);
             }
+            // Classic 2015: haptics not implemented (uncalibrated 0x8F report)
+            // — the entry point logs once and no-ops.
+            Device::Classic(c) => c.haptic_click(550, -6, 5),
         }
     }
 
@@ -72,6 +81,9 @@ impl Device {
             }
             Device::Deck(d) => {
                 d.haptic_pad_click();
+            }
+            Device::Classic(c) => {
+                c.haptic_pad_click();
             }
         }
     }
@@ -211,6 +223,7 @@ impl ControllerManager {
         self.kb.release_code(K::KEY_LEFTSHIFT);
         self.kb.release_code(K::KEY_RIGHTSHIFT);
         self.kb.release_code(K::KEY_ENTER);
+        self.kb.release_code(K::KEY_LEFTALT);
         if self.mouse_l_active {
             self.mouse.release("right");
             self.mouse_l_active = false;
@@ -220,6 +233,46 @@ impl ControllerManager {
             self.mouse_r_active = false;
         }
         state.set_shift_held(false);
+    }
+
+    /// Re-seed every edge latch for a switch of the active device (see
+    /// `input_thread`). Seeded FROM THE ACTIVATING FRAME: `steam_was_pressed`
+    /// mirrors its Steam/QAM bit, and `saw_x_during_steam` is ALWAYS false —
+    /// seeding it true swallowed the very first Steam+X chord after every
+    /// pickup (the activation itself is triggered by the Steam press, so
+    //  "chord already handled" was a lie — X hadn't happened yet).
+    pub fn reset_for_device_switch(&mut self, state: &OskState, seed: &SciInput) {
+        self.release_held(state);
+        self.steam_was_pressed = seed.buttons & (btn::STEAM | btn::QAM) != 0;
+        self.saw_x_during_steam = false;
+        self.open_t = Instant::now();
+        self.l3_was_pressed = false;
+        self.b_was_pressed = false;
+        self.lgrip_was_pressed = false;
+        self.a_was_pressed = false;
+        self.a_repeat_at = Instant::now();
+        self.view_was_pressed = false;
+        self.alt_held_for_tab = false;
+        self.dpad_prev = 0;
+        self.x_was_pressed = false;
+        self.x_repeat_at = Instant::now();
+        self.lt_prev = false;
+        self.rt_prev = false;
+        self.lt_role = None;
+        self.lclick_repeat_at = None;
+        self.rclick_repeat_at = None;
+        self.stick_zone_prev = Zone::Neutral;
+        self.stick_repeat_at = Instant::now();
+        self.kbd_stick_zone_prev = Zone::Neutral;
+        self.kbd_stick_repeat_at = Instant::now();
+        self.open_tick_pending = false;
+        self.lizard_asserted_on = None;
+        self.shift_active = false;
+        self.enter_active = false;
+        self.mouse_acc_x = 0.0;
+        self.mouse_acc_y = 0.0;
+        self.mouse_last_t = None;
+        self.sc_input_previous = SCI_NULL;
     }
 
     fn trigger_pressed(&self, b: &SciInput, bit: u32, analog: i32) -> bool {
@@ -409,6 +462,16 @@ impl ControllerManager {
         // firmware output. Re-asserted on change or every ~2 s (the
         // firmware's own timer re-enables on its own schedule).
         let desired_lizard_on = !state.is_visible() && !steam_now;
+        if self.lizard_asserted_on != Some(desired_lizard_on) {
+            println!(
+                "osk: lizard -> {}",
+                if desired_lizard_on {
+                    "on (desktop)"
+                } else {
+                    "off (osk owns)"
+                }
+            );
+        }
         if self.lizard_asserted_on != Some(desired_lizard_on)
             || now.duration_since(self.last_lizard_assert).as_secs_f32() > 2.0
         {
@@ -672,9 +735,172 @@ impl ControllerManager {
     }
 }
 
-/// Controller thread body: whichever device is present feeds `handle_input`
-/// at its native rate; reconnects on loss. The OSK owns the controller
-/// (lizard OFF at open, restored on teardown) — `passive=false`.
+/// Which controller the manager is currently bound to (multi-device
+/// support: every attached controller gets a reader thread; the manager
+/// follows the one actually in use, with hysteresis against mid-chord theft).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Deck,
+    Triton,
+    Classic,
+}
+
+/// A frame counts as "in use" ONLY by its button/touch BITS (minus the
+/// always-on paddle REST bits). Analog axes are deliberately excluded: the
+/// SC 2026 has no rest normalization guarantees (untouched pads/sticks can
+/// rest far from 0, and a garbage dongle slot can stream junk forever), and
+/// any axis-based predicate made the first streamer permanently "active",
+/// locking out every other controller. Touching a pad sets a touch bit, so
+/// pick-up always registers.
+fn frame_has_activity(s: &SciInput) -> bool {
+    s.buttons & !(btn::LGRIP_REST | btn::RGRIP_REST) != 0
+}
+
+struct Reg {
+    dev: Device,
+    /// Last frame arrival from this device (any content).
+    last_frame: Instant,
+    /// Last frame with actual input activity.
+    last_active: Instant,
+    /// Previous frame's button mask, for edge logging while active.
+    prev_buttons: u32,
+    /// One-shot first-frame diagnostic (rest values of buttons/axes).
+    dumped: bool,
+    /// Rate telemetry: frames since the last rate report.
+    frames: u64,
+    /// Rate telemetry: activity-frames since the last rate report.
+    activity_frames: u64,
+}
+
+fn spawn_deck_reader(
+    readers: &mut Vec<(Kind, JoinHandle<()>)>,
+    tx: &mpsc::Sender<(Kind, SciInput)>,
+    stop: &Arc<crate::stop::StopFlag>,
+) -> Option<Device> {
+    let d = DeckController::new(true, None, Arc::clone(stop)).ok()?;
+    let d = Arc::new(d);
+    let d_run = Arc::clone(&d);
+    let tx2 = tx.clone();
+    let sp = Arc::clone(stop);
+    readers.push((
+        Kind::Deck,
+        std::thread::spawn(move || {
+            loop {
+                d_run.run(&mut |_c, s| {
+                    let _ = tx2.send((Kind::Deck, *s));
+                });
+                if sp.wait(Duration::from_secs(2)) {
+                    break;
+                }
+            }
+        }),
+    ));
+    Some(Device::Deck(d))
+}
+
+fn spawn_triton_reader(
+    readers: &mut Vec<(Kind, JoinHandle<()>)>,
+    tx: &mpsc::Sender<(Kind, SciInput)>,
+    stop: &Arc<crate::stop::StopFlag>,
+) -> Option<Device> {
+    let sc = SteamController::new(true, Arc::clone(stop)).ok()?;
+    let sc = Arc::new(sc);
+    let sc_run = Arc::clone(&sc);
+    let tx2 = tx.clone();
+    let sp = Arc::clone(stop);
+    readers.push((
+        Kind::Triton,
+        std::thread::spawn(move || {
+            loop {
+                sc_run.run(&mut |_c, s| {
+                    let _ = tx2.send((Kind::Triton, *s));
+                });
+                if sp.wait(Duration::from_secs(2)) {
+                    break;
+                }
+            }
+        }),
+    ));
+    Some(Device::Triton(sc))
+}
+
+fn spawn_classic_reader(
+    readers: &mut Vec<(Kind, JoinHandle<()>)>,
+    tx: &mpsc::Sender<(Kind, SciInput)>,
+    stop: &Arc<crate::stop::StopFlag>,
+) -> Option<Device> {
+    let c = ClassicController::new(true, Arc::clone(stop)).ok()?;
+    let c = Arc::new(c);
+    let c_run = Arc::clone(&c);
+    let tx2 = tx.clone();
+    let sp = Arc::clone(stop);
+    readers.push((
+        Kind::Classic,
+        std::thread::spawn(move || {
+            loop {
+                c_run.run(&mut |_c, s| {
+                    let _ = tx2.send((Kind::Classic, *s));
+                });
+                if sp.wait(Duration::from_secs(2)) {
+                    break;
+                }
+            }
+        }),
+    ));
+    Some(Device::Classic(c))
+}
+
+fn spawn_reader(
+    kind: Kind,
+    readers: &mut Vec<(Kind, JoinHandle<()>)>,
+    tx: &mpsc::Sender<(Kind, SciInput)>,
+    stop: &Arc<crate::stop::StopFlag>,
+) -> Option<Device> {
+    match kind {
+        Kind::Deck => spawn_deck_reader(readers, tx, stop),
+        Kind::Triton => spawn_triton_reader(readers, tx, stop),
+        Kind::Classic => spawn_classic_reader(readers, tx, stop),
+    }
+}
+
+/// Bind the manager to `kind`: previous device goes back to desktop posture
+/// (lizard ON), edge latches re-seed FROM THE ACTIVATING FRAME, the haptic
+/// hook re-points.
+fn activate(
+    manager: &mut ControllerManager,
+    state: &Arc<OskState>,
+    registry: &[(Kind, Reg)],
+    active: &mut Option<Kind>,
+    kind: Kind,
+    seed: &SciInput,
+) {
+    let Some((_, new)) = registry.iter().find(|(k, _)| *k == kind) else {
+        return;
+    };
+    if let Some(a) = *active
+        && let Some((_, old)) = registry.iter().find(|(k, _)| *k == a)
+    {
+        old.dev.set_lizard(true);
+    }
+    manager.reset_for_device_switch(state, seed);
+    let dev = new.dev.clone();
+    state.set_haptic_tick(Arc::new(move || {
+        let dev = dev.clone();
+        std::thread::spawn(move || dev.haptic_tick());
+    }));
+    *active = Some(kind);
+    diag::log(&format!("osk: active controller: {kind:?}"));
+}
+
+/// Controller thread body. ONE reader thread per attached device (Deck /
+/// Triton 2026 / classic 2015) — all controllers stay live simultaneously,
+/// like the Python app's InputSourceMerger — but the OSK manager binds to
+/// exactly ONE device at a time: the one showing input activity. Switching
+/// requires the current device to have been idle for a beat (hysteresis), so
+/// grabbing a second controller mid-chord can't steal input. Devices are
+/// opened PASSIVE (lizard ON / desktop posture); the manager asserts lizard
+/// policy on the active device per frame, exactly like the single-device
+/// path did.
 pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
     let mut manager = match ControllerManager::new() {
         Ok(m) => m,
@@ -683,65 +909,217 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
             return;
         }
     };
+
+    /// The active device must be idle this long before another can take over.
+    const SWITCH_IDLE: Duration = Duration::from_millis(300);
+    /// No frames at all for this long => device considered gone.
+    const GONE: Duration = Duration::from_millis(1500);
+
+    let (tx, rx) = mpsc::channel::<(Kind, SciInput)>();
+    let mut registry: Vec<(Kind, Reg)> = Vec::new();
+    let mut readers: Vec<(Kind, JoinHandle<()>)> = Vec::new();
+    let mut active: Option<Kind> = None;
     let mut absence_noted = false;
+    let mut next_supervise = Instant::now();
+    let mut next_telemetry = Instant::now() + Duration::from_secs(5);
 
     while !stop.is_set() && !state.should_close_app() {
-        let device = if crate::deck::deck_present() {
-            println!("osk: Steam Deck connected (28de:1205)");
-            DeckController::new(false, None, Arc::clone(&stop))
-                .ok()
-                .map(|d| Device::Deck(Arc::new(d)))
-        } else if crate::triton::triton_present() {
-            println!("osk: Steam Controller 2026 connected");
-            SteamController::new(false, Arc::clone(&stop))
-                .ok()
-                .map(|sc| Device::Triton(Arc::new(sc)))
-        } else {
-            if !absence_noted {
-                println!("osk: no controller present; waiting…");
-                absence_noted = true;
+        // --- input: block for the next frame, then drain the whole backlog.
+        // NEVER one-frame-per-iteration: that design ran three full HID
+        // enumerations per frame and throttled 250 Hz controllers to ~12
+        // fps — quick taps (Steam+X!) fell between iterations and vanished.
+        let mut frames: std::collections::VecDeque<(Kind, SciInput)> = Default::default();
+        if let Ok(f) = rx.recv_timeout(Duration::from_millis(200)) {
+            frames.push_back(f);
+            while let Ok(f) = rx.try_recv() {
+                frames.push_back(f);
+                if frames.len() >= 2000 {
+                    frames.pop_front(); // staleness cap: keep the newest
+                }
             }
-            None
-        };
+        }
 
-        if let Some(device) = device {
-            absence_noted = false;
-            // Publish the haptic hooks so the main thread can buzz on each
-            // dispatched key (the Python state.set_haptic_tick equivalent).
-            // The buzz runs on a throwaway thread: the render thread calls
-            // this per dispatched key, and the write would otherwise contend
-            // on the device mutex the input thread holds across blocking
-            // reads (up to one read-timeout of typing lag per keypress).
+        // --- 1 Hz supervision tick: hot-plug, telemetry, handover. --------
+        let now = Instant::now();
+        if now >= next_supervise {
+            next_supervise = now + Duration::from_secs(1);
+            // (Re)spawn readers for present devices (hot-plug).
+            let checks = [
+                (Kind::Deck, crate::deck::deck_present()),
+                (Kind::Triton, crate::triton::triton_present()),
+                (Kind::Classic, crate::classic::classic_present()),
+            ];
+            for (kind, present) in checks {
+                if !present {
+                    continue;
+                }
+                if readers.iter().any(|(k, h)| *k == kind && !h.is_finished()) {
+                    continue;
+                }
+                if let Some(dev) = spawn_reader(kind, &mut readers, &tx, &stop) {
+                    registry.retain(|(k, _)| *k != kind);
+                    registry.push((
+                        kind,
+                        Reg {
+                            dev,
+                            last_frame: Instant::now(),
+                            last_active: Instant::now() - SWITCH_IDLE - SWITCH_IDLE,
+                            prev_buttons: 0,
+                            dumped: false,
+                            frames: 0,
+                            activity_frames: 0,
+                        },
+                    ));
+                    diag::log(&format!("osk: {kind:?} reader attached"));
+                }
+            }
+
+            if registry.is_empty() {
+                if !absence_noted {
+                    diag::log("osk: no controller present; waiting…");
+                    absence_noted = true;
+                }
+            } else {
+                absence_noted = false;
+            }
+
+            if now >= next_telemetry {
+                next_telemetry = now + Duration::from_secs(5);
+                for (k, r) in registry.iter_mut() {
+                    diag::log(&format!(
+                        "osk: [{k:?}] telemetry: {} frames, {} with buttons",
+                        r.frames, r.activity_frames
+                    ));
+                    r.frames = 0;
+                    r.activity_frames = 0;
+                }
+            }
+
+            // Active device dropped off USB mid-use: hand over to any other
+            // device that is still streaming.
+            if let Some(a) = active
+                && let Some((_, r)) = registry.iter().find(|(k, _)| *k == a)
+                && r.last_frame.elapsed() > GONE
             {
-                let dev = device.clone();
-                state.set_haptic_tick(Arc::new(move || {
-                    let dev = dev.clone();
-                    std::thread::spawn(move || dev.haptic_tick());
-                }));
-            }
-            match &device {
-                Device::Deck(d) => {
-                    let st = Arc::clone(&state);
-                    let dev = Device::Deck(Arc::clone(d));
-                    d.run(&mut |_c, sci| {
-                        manager.handle_input(&st, &dev, sci);
-                    });
-                }
-                Device::Triton(sc) => {
-                    let st = Arc::clone(&state);
-                    let dev = Device::Triton(Arc::clone(sc));
-                    sc.run(&mut |_c, sci| {
-                        manager.handle_input(&st, &dev, sci);
-                    });
+                match registry
+                    .iter()
+                    .find(|(k, r)| *k != a && r.last_frame.elapsed() < GONE)
+                {
+                    Some((k, _)) => {
+                        activate(&mut manager, &state, &registry, &mut active, *k, &SCI_NULL)
+                    }
+                    None => {
+                        active = None;
+                        manager.release_held(&state);
+                    }
                 }
             }
-            manager.release_held(&state);
-            // Device dropped/teardown restores lizard via the drivers.
-        }
+        } // supervision tick
 
-        if stop.wait(Duration::from_secs(2)) {
-            break;
-        }
+        for (kind, sci) in frames {
+            if let Some((_, r)) = registry.iter_mut().find(|(k, _)| *k == kind) {
+                r.last_frame = Instant::now();
+                r.frames += 1;
+                if frame_has_activity(&sci) {
+                    r.last_active = Instant::now();
+                    r.activity_frames += 1;
+                }
+                if !r.dumped {
+                    r.dumped = true;
+                    // Hands-off rest snapshot: reveals stuck bits and uncentered
+                    // axes (the Triton parser, unlike the Deck one, does no
+                    // auto-centering — large rest values here are the bug).
+                    diag::log(&format!(
+                        "osk: [{kind:?}] first frame: buttons=0x{:08X} lt={} rt={} \
+                     lpad=({},{}) rpad=({},{}) lstick=({},{}) rstick=({},{})",
+                        sci.buttons,
+                        sci.ltrig,
+                        sci.rtrig,
+                        sci.lpad_x,
+                        sci.lpad_y,
+                        sci.rpad_x,
+                        sci.rpad_y,
+                        sci.lstick_x,
+                        sci.lstick_y,
+                        sci.rstick_x,
+                        sci.rstick_y
+                    ));
+                    // Seed the edge logger from the first frame so an already-held
+                    // thumb (LPADTOUCH etc.) doesn't print as a phantom press.
+                    r.prev_buttons = sci.buttons;
+                }
+            }
+
+            match active {
+                None => {
+                    // First device to show real input wins. Print the activating
+                    // frame — if a garbage/noise stream ever sneaks past the
+                    // readers, this line is where it becomes visible.
+                    if frame_has_activity(&sci) {
+                        diag::log(&format!(
+                            "osk: activation [{kind:?}]: buttons=0x{:08X} lt={} rt={} \
+                         lstick=({},{}) rstick=({},{})",
+                            sci.buttons,
+                            sci.ltrig,
+                            sci.rtrig,
+                            sci.lstick_x,
+                            sci.lstick_y,
+                            sci.rstick_x,
+                            sci.rstick_y
+                        ));
+                        activate(&mut manager, &state, &registry, &mut active, kind, &sci);
+                    }
+                }
+                Some(a) if a == kind => {
+                    if let Some((_, r)) = registry.iter_mut().find(|(k, _)| *k == kind) {
+                        // Button-edge log (the active device only — human-paced):
+                        // proves chord bits (Steam+X) and reveals any mis-mapped
+                        // button in the next diag file.
+                        let edges = r.prev_buttons ^ sci.buttons;
+                        if edges != 0 {
+                            let pressed = edges & sci.buttons;
+                            let released = edges & r.prev_buttons;
+                            let names = |m: u32| {
+                                crate::sc::button_names(m)
+                                    .iter()
+                                    .map(|s| s.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("+")
+                            };
+                            diag::log(&format!(
+                                "osk: [{kind:?}] +{} -{}",
+                                if pressed != 0 {
+                                    names(pressed)
+                                } else {
+                                    "-".into()
+                                },
+                                if released != 0 {
+                                    names(released)
+                                } else {
+                                    "-".into()
+                                }
+                            ));
+                        }
+                        r.prev_buttons = sci.buttons;
+                        let dev = r.dev.clone();
+                        manager.handle_input(&state, &dev, &sci);
+                    }
+                }
+                Some(a) => {
+                    // Activity on a non-active device: take over only if the
+                    // active one has been idle (hysteresis). The frame that
+                    // triggers the switch is dropped — the manager re-seeds.
+                    let active_idle = registry
+                        .iter()
+                        .find(|(k, _)| *k == a)
+                        .map(|(_, r)| r.last_active.elapsed() > SWITCH_IDLE)
+                        .unwrap_or(true);
+                    if frame_has_activity(&sci) && active_idle {
+                        activate(&mut manager, &state, &registry, &mut active, kind, &sci);
+                    }
+                }
+            }
+        } // for frames
     }
     manager.release_held(&state);
     state.close();

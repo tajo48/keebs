@@ -59,25 +59,32 @@
         };
       });
 
-      # Dev shell: nix develop -c cargo run --release
-      devShells.default = forAllSystems (system:
+      # Dev shells: `nix develop -c …` AND `nix develop .#keebs -c …` — the
+      # keebs alias must exist, otherwise nix falls back to the
+      # buildRustPackage's build environment, which has cargo but NOT SDL3
+      # on LD_LIBRARY_PATH (keebs dlopens libSDL3.so.0 by soname at runtime).
+      devShells = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-        in
-        pkgs.mkShell {
-          packages = [
-            pkgs.cargo
-            pkgs.rustc
-            pkgs.rustfmt
-            pkgs.clippy
-            pkgs.pkg-config
-            pkgs.udev
-            pkgs.sdl3
-            pkgs.sdl3-ttf
-          ];
-          shellHook = ''
-            export LD_LIBRARY_PATH="${pkgs.sdl3}/lib:${pkgs.sdl3-ttf}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          '';
+          shell = pkgs.mkShell {
+            packages = [
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.rustfmt
+              pkgs.clippy
+              pkgs.pkg-config
+              pkgs.udev
+              pkgs.sdl3
+              pkgs.sdl3-ttf
+              pkgs.libusb1
+            ];
+            shellHook = ''
+              export LD_LIBRARY_PATH="${pkgs.sdl3}/lib:${pkgs.sdl3-ttf}/lib:${pkgs.libusb1}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            '';
+          };
+        in {
+          default = shell;
+          keebs = shell;
         });
     };
 }

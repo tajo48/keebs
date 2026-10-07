@@ -16,8 +16,9 @@ Or hack on it in the keebs dev shell:
 nix develop .#keebs -c cargo run --release
 ```
 
-Opens the on-screen keyboard (Steam-dark theme, Selawik font). It listens
-for the controller in the background:
+Starts hidden in the background, listening for the controller.
+**Steam + X** opens the on-screen keyboard (Steam-dark theme, Selawik
+font); it also listens for the mouse in case you want to click-type:
 
 | input | action |
 |-------|--------|
@@ -38,16 +39,43 @@ for the controller in the background:
 Mouse also works on the OSK directly: hover highlights, left-click presses,
 right-click = Shift, back/forward buttons = Backspace/Space.
 
+**Multiple controllers:** every attached device (Deck / SC 2026 / SC 2015)
+gets its own reader; the OSK binds to whichever controller you actually
+touch (300 ms hysteresis — a device in use can't be stolen mid-chord), and
+switches automatically when you pick up the other one. Inactive devices
+stay in desktop posture (lizard on).
+
 `--listener` runs the phase-1 passive device listener instead (prints button
-edges + battery, LGRIP1/L4 -> Left Shift).
+edges + battery, LGRIP1/L4 -> Left Shift). Detects the Steam Deck, the
+Steam Controller 2026 (Triton), and the classic Steam Controller (2015,
+0x1102 dongle / 0x1142 wired) automatically.
 
 ## Status
 
-**Ported:** Triton (0x1304/0x1302) + Deck (0x1205) drivers, lizard control,
-haptics/rumble/chime, battery, uinput injection, EventMapper, chord logic
-(`controller.py` core), on-screen keyboard (`vkb.py` layout/geometry/cursor
-stepping/dispatch, `screen.py` rendering — SDL3 + SDL3_ttf via a libloading
-FFI that mirrors the Python `sdl3w` shim).
+**Ported:** Triton (0x1304/0x1302) + Deck (0x1205) + classic Steam Controller
+(0x1102/0x1142) drivers, lizard control, haptics/rumble/chime (Triton/Deck),
+battery, uinput injection, EventMapper, chord logic (`controller.py` core),
+on-screen keyboard (`vkb.py` layout/geometry/cursor stepping/dispatch,
+`screen.py` rendering — SDL3 + SDL3_ttf via a libloading FFI that mirrors
+the Python `sdl3w` shim).
+
+### Classic Steam Controller (2015) — provisional wire tables
+
+The classic driver's byte layout and button masks (see `parse_classic` in
+`src/sc.rs`) are assembled from the ynsta/steamcontroller + SDL classic
+structs and are **not yet calibrated against live hardware**. Haptics are
+no-ops pending the 0x8F "singer" report, and battery is not parsed. To
+calibrate against your controller:
+
+```sh
+nix develop .#keebs -c cargo run -- --probe-sc
+```
+
+Follow the prompts (hold each input for ~2.5 s); the probe prints which
+bits/offsets moved per input. Paste the output into an issue and the
+tables get fixed. The 2015 hardware has no sticks/D-pad — pads drive the
+OSK (the original Steam behavior), so stick-cursor and Steam+stick media
+chords are unavailable on it.
 
 **Not ported yet:** skins/CSS theming + transparency + live tray skin
 switch, open animation, click-through + window position rotation,

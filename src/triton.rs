@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use hidapi::{HidApi, HidDevice};
 
+use crate::diag;
 use crate::sc::*;
 use crate::stop::StopFlag;
 
@@ -165,40 +166,72 @@ impl SteamController {
                 }
             }
 
-            // Probe: wait briefly for input reports. Unpaired wireless ports
-            // stay silent, so keep moving in that case. Devices open in
-            // blocking mode by default, which is what we want here.
-            let deadline = Instant::now() + Duration::from_millis(1500);
-            let mut got_input = false;
+            // Probe & VALIDATE. The dongle exposes several slots and an
+            // unpaired/phantom one can emit input-shaped junk forever — the
+            // first-responsive slot is NOT trustworthy (observed on live
+            // hardware: phantom key dispatches + never-quiet button flapping
+            // that locks every other controller out of the OSK). Accept only
+            // a slot that streams input frames AND shows at least one fully
+            // quiet (hands-off) frame in the window. If the user happens to
+            // be holding buttons during validation, the reader retries in 2 s
+            // and succeeds once the controller is at rest.
+            let deadline = Instant::now() + Duration::from_millis(400);
+            let (mut frames, mut quiet) = (0usize, 0usize);
+            let mut prev_buttons: Option<u32> = None;
+            let mut flaps = 0usize;
             while Instant::now() < deadline {
                 let mut buf = [0u8; 64];
-                match dev.read_timeout(&mut buf, 200) {
+                let n = match dev.read_timeout(&mut buf, 100) {
                     Ok(n)
                         if n >= TRITON_INPUT_MIN_LEN
                             && TRITON_INPUT_REPORT_IDS.contains(&buf[0]) =>
                     {
-                        got_input = true;
-                        break;
+                        n
                     }
-                    Ok(_) => {}
+                    Ok(_) => continue,
                     Err(e) => {
                         last_err = Some(e.to_string());
                         break;
                     }
+                };
+                let Some(sci) = parse_triton(&buf[..n]) else {
+                    continue;
+                };
+                frames += 1;
+                let mask = sci.buttons & !(buttons::LGRIP_REST | buttons::RGRIP_REST);
+                if mask == 0 {
+                    quiet += 1;
                 }
+                if prev_buttons.is_some_and(|p| p != sci.buttons) {
+                    flaps += 1;
+                }
+                prev_buttons = Some(sci.buttons);
             }
 
-            if got_input {
+            let ok = frames >= 2 && quiet >= 1;
+            let verdict = if ok {
+                "accepted"
+            } else if frames == 0 {
+                "rejected (silent — controller asleep or unpaired?)"
+            } else {
+                "rejected (streams but never quiet — junk slot?)"
+            };
+            diag::log(&format!(
+                "steamcontroller: iface {} probe: {frames} frames, {quiet} quiet, {flaps} button flaps -> {verdict}",
+                cand.iface
+            ));
+            if ok {
                 *self.inner.lock().unwrap() = Some(dev);
                 *LAST_GOOD_PATH.lock().unwrap() = Some(cand.path.clone());
-                println!("steamcontroller: opened iface {}", cand.iface);
+                diag::log(&format!("steamcontroller: opened iface {}", cand.iface));
                 return Ok(());
             }
         }
 
         Err(format!(
-            "Found Steam Controller 2026 interfaces but none returned input \
-             reports. Is the controller paired/powered? Last error: {last_err:?}"
+            "Found Steam Controller 2026 interfaces but none passed validation \
+             (need input frames + at least one hands-off quiet frame; a phantom \
+             dongle slot streams junk that never quiets). Last error: {last_err:?}"
         ))
     }
 
@@ -466,11 +499,20 @@ impl SteamController {
         let pids: HashSet<u16> = present_product_ids(&self.api);
         if !(pids.contains(&PRODUCT_ID_PROTEUS) || pids.contains(&PRODUCT_ID_WIRED)) {
             if !ABSENCE_NOTED.swap(true, Ordering::SeqCst) {
-                println!(
+                diag::log(
                     "steamcontroller: no Steam Controller 2026 present \
                      (looking for PID 0x{PRODUCT_ID_PROTEUS:04X} dongle / \
                      0x{PRODUCT_ID_WIRED:04X} wired; other Valve USB devices \
                      such as a Steam Deck are not supported by this driver)"
+                        .replace(
+                            "{PRODUCT_ID_PROTEUS:04X}",
+                            &format!("{:04X}", PRODUCT_ID_PROTEUS),
+                        )
+                        .replace(
+                            "{PRODUCT_ID_WIRED:04X}",
+                            &format!("{:04X}", PRODUCT_ID_WIRED),
+                        )
+                        .as_str(),
                 );
             }
             return;
@@ -478,10 +520,45 @@ impl SteamController {
         ABSENCE_NOTED.store(false, Ordering::SeqCst);
 
         if let Err(e) = self.open_first_responsive() {
-            println!("steamcontroller: open failed: {e}");
+            diag::log(&format!("steamcontroller: open failed: {e}"));
             return;
         }
         self.opened.store(true, Ordering::SeqCst);
+
+        // Rest normalization (the Deck driver's hard-won lesson, applied to
+        // the 2026 controller): average the first quiet frames so sticks and
+        // triggers read ~0 at rest. Without this, a resting stick beyond the
+        // mouse deadzone drifts the cursor forever and a resting trigger
+        // past 16384 permanently latches the Shift/Enter roles. Pads are
+        // absolute-position and are NOT normalized.
+        let mut sums = [0i32; 6];
+        let mut n = 0usize;
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while n < 30 && Instant::now() < deadline {
+            let mut buf = [0u8; 64];
+            let got = {
+                let guard = self.inner.lock().unwrap();
+                let Some(dev) = guard.as_ref() else { break };
+                dev.read_timeout(&mut buf, 50).unwrap_or(0)
+            };
+            if got == 0 {
+                continue;
+            }
+            if let Some(sci) = parse_triton(&buf[..got]) {
+                sums[0] += i32::from(sci.lstick_x);
+                sums[1] += i32::from(sci.lstick_y);
+                sums[2] += i32::from(sci.rstick_x);
+                sums[3] += i32::from(sci.rstick_y);
+                sums[4] += i32::from(sci.ltrig);
+                sums[5] += i32::from(sci.rtrig);
+                n += 1;
+            }
+        }
+        let centers = if n > 0 {
+            sums.map(|s| (s / n as i32) as i16)
+        } else {
+            [0i16; 6]
+        };
 
         if !self.passive {
             self.spawn_lizard_watchdog();
@@ -521,7 +598,15 @@ impl SteamController {
                 _ => {}
             }
 
-            if let Some(sci) = parse_triton(&buf[..n]) {
+            if let Some(mut sci) = parse_triton(&buf[..n]) {
+                sci.lstick_x -= centers[0];
+                sci.lstick_y -= centers[1];
+                sci.rstick_x -= centers[2];
+                sci.rstick_y -= centers[3];
+                // Triggers only pull one way: clamp the rest-corrected value
+                // at zero so a negative rest offset can't read as "pulled".
+                sci.ltrig = (sci.ltrig - centers[4]).max(0);
+                sci.rtrig = (sci.rtrig - centers[5]).max(0);
                 self.note_frame(None);
                 cb(self, &sci);
             }

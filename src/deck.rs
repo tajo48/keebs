@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::diag;
 use crate::lizardguard::LizardGrabber;
 use crate::sc::*;
 use crate::stop::StopFlag;
@@ -204,13 +205,17 @@ impl DeckController {
                 }
             }
             if Instant::now() >= deadline {
-                println!("deck: could not open libusb session on iface 2");
+                diag::log(
+                    "deck: could not open libusb session on iface 2 \
+                           (tether alive? try replugging USB-C)",
+                );
                 return;
             }
             thread::sleep(Duration::from_millis(100));
         };
         *self.session.lock().unwrap() = Some(session);
         self.opened.store(true, Ordering::SeqCst);
+        diag::log("deck: libusb session opened (iface 2)");
         // NOTE: no lizard SET_REPORT writes — lizard stays ENABLED at the
         // firmware level so its native trackpad haptics keep working; the
         // grabber (driven by set_lizard from the manager) handles the
@@ -275,7 +280,13 @@ impl DeckController {
             let mut buf = [0u8; 64];
             let outcome = self.read_frame(&mut buf, 200);
             match outcome {
-                ReadOutcome::Gone => break,
+                ReadOutcome::Gone => {
+                    diag::log(
+                        "deck: session lost (read error / device gone) — \
+                               reader will retry",
+                    );
+                    break;
+                }
                 ReadOutcome::Quiet => continue,
                 ReadOutcome::Data(m) => {
                     if let Some(sci) = parse_deck(&buf[..m], centers) {
