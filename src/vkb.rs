@@ -8,9 +8,11 @@
 use crate::osk_state::{Dir, OskState};
 use crate::uinput::{Keyboard, keys as K};
 
-// Hold-to-repeat cadence shared by EVERY "press a key" input path.
-pub const KEY_REPEAT_DELAY: f32 = 0.4;
-pub const KEY_REPEAT_INTERVAL: f32 = 0.205;
+// Hold-to-repeat cadence shared by EVERY "press a key" input path —
+// matches a standard Linux keyboard (X defaults: 500 ms initial delay,
+// ~30 cps repeat rate).
+pub const KEY_REPEAT_DELAY: f32 = 0.5;
+pub const KEY_REPEAT_INTERVAL: f32 = 1.0 / 30.0;
 
 const PADDING_INNER: f32 = 3.0;
 const PADDING_OUTER: f32 = 2.0;
@@ -206,14 +208,12 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("'", Some("\""), 40),
             KeyDef {
                 glyph: Some("\u{21B5}"), // ↵
-                hint: Some("R2"),
                 ..mod_key("Enter", K::KEY_ENTER, Behavior::Generic, 1.7, Right, Bottom)
             },
         ],
         vec![
             KeyDef {
                 glyph: Some("\u{21E7}"), // ⇧
-                hint: Some("L2"),
                 ..mod_key(
                     "Shift",
                     K::KEY_LEFTSHIFT,
@@ -235,7 +235,6 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             key("/", Some("?"), 53),
             KeyDef {
                 glyph: Some("\u{21E7}"), // ⇧
-                hint: Some("L2"),
                 ..mod_key(
                     "Shift",
                     K::KEY_RIGHTSHIFT,
@@ -247,14 +246,17 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
         ],
         vec![
-            mod_key(
-                "Ctrl",
-                K::KEY_LEFTCTRL,
-                Behavior::Ctrl,
-                1.0,
-                Align::Center,
-                VAlign::Center,
-            ),
+            KeyDef {
+                hint: Some("L4"),
+                ..mod_key(
+                    "Ctrl",
+                    K::KEY_LEFTCTRL,
+                    Behavior::Ctrl,
+                    1.0,
+                    Align::Center,
+                    VAlign::Center,
+                )
+            },
             mod_key(
                 "Alt",
                 K::KEY_LEFTALT,
@@ -263,26 +265,32 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
                 Align::Center,
                 VAlign::Center,
             ),
-            mod_key(
-                "AltGr",
-                K::KEY_RIGHTALT,
-                Behavior::AltGr,
-                0.9,
-                Align::Center,
-                VAlign::Center,
-            ),
-            mod_key(
-                "Win",
-                K::KEY_LEFTMETA,
-                Behavior::Win,
-                0.9,
-                Align::Center,
-                VAlign::Center,
-            ),
+            KeyDef {
+                hint: Some("L5"),
+                ..mod_key(
+                    "AltGr",
+                    K::KEY_RIGHTALT,
+                    Behavior::AltGr,
+                    0.9,
+                    Align::Center,
+                    VAlign::Center,
+                )
+            },
+            KeyDef {
+                hint: Some("R4"),
+                ..mod_key(
+                    "Win",
+                    K::KEY_LEFTMETA,
+                    Behavior::Win,
+                    0.9,
+                    Align::Center,
+                    VAlign::Center,
+                )
+            },
             KeyDef {
                 width_weight: 4.0,
                 align: Align::Left,
-                hint: Some("Y / R4 / R5"),
+                hint: Some("Y"),
                 ..key("", None, K::KEY_SPACE)
             },
             KeyDef {
@@ -310,7 +318,7 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
             KeyDef {
                 glyph: Some("\u{2328}"), // ⌨
-                hint: Some("B"),
+                hint: Some("B / R5"),
                 ..mod_key("Close", 0, Behavior::Move, 1.4, Align::Center, Top)
             },
         ],

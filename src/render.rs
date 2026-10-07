@@ -467,7 +467,11 @@ impl Screen {
             } else {
                 (POINTER_DOT, 255u8)
             };
-            self.fill_circle(cx, cy, 13.0, color, alpha);
+            // Catppuccin Frappé blue (#8caaee) rim: outer blue disc, inner
+            // green disc — a solid blue border around the opaque green dot.
+            const FRAPPE_BLUE: (u8, u8, u8) = (0x8C, 0xAA, 0xEE);
+            self.fill_circle(cx, cy, 13.0, FRAPPE_BLUE, 255);
+            self.fill_circle(cx, cy, 10.0, color, alpha);
         }
 
         unsafe {

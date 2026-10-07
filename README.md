@@ -32,7 +32,7 @@ font); it also listens for the mouse in case you want to click-type:
 | **X** | Backspace (hold to repeat) |
 | **Y** | Space |
 | **L4** (left upper paddle) | hold **Ctrl** |
-| **L5** (left lower paddle) | hold **Alt** |
+| **L5** (left lower paddle) | hold **AltGr** (Polish ą/ę/ś…) |
 | **R4** (right upper paddle) | hold **Win** |
 | **trackpad touch** | move the pointer; **pad click** / L2/R2 while touched presses the key under it |
 | **right stick** | move the system mouse (point-and-click keys) |

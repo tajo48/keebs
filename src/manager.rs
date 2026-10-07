@@ -168,9 +168,9 @@ pub struct ControllerManager {
     open_tick_pending: bool,
     lizard_asserted_on: Option<bool>,
     last_lizard_assert: Instant,
-    /// Back-paddle hold-modifiers (user mapping): L4=Ctrl, L5=Alt, R4=Win.
+    /// Back-paddle hold-modifiers (user mapping): L4=Ctrl, L5=AltGr, R4=Win.
     ctrl_held: bool,
-    alt_held: bool,
+    altgr_held: bool,
     win_held: bool,
     /// R5 (right lower paddle) rising edge closes the keyboard.
     r5_was_pressed: bool,
@@ -216,7 +216,7 @@ impl ControllerManager {
             lizard_asserted_on: None,
             last_lizard_assert: Instant::now(),
             ctrl_held: false,
-            alt_held: false,
+            altgr_held: false,
             win_held: false,
             r5_was_pressed: false,
             mouse_l_active: false,
@@ -239,7 +239,7 @@ impl ControllerManager {
         self.kb.release_code(K::KEY_RIGHTALT);
         self.kb.release_code(K::KEY_LEFTMETA);
         self.ctrl_held = false;
-        self.alt_held = false;
+        self.altgr_held = false;
         self.win_held = false;
         state.set_ctrl_latched(false);
         state.set_alt_latched(false);
@@ -287,7 +287,7 @@ impl ControllerManager {
         self.open_tick_pending = false;
         self.lizard_asserted_on = None;
         self.ctrl_held = false;
-        self.alt_held = false;
+        self.altgr_held = false;
         self.win_held = false;
         self.r5_was_pressed = false;
         self.mouse_acc_x = 0.0;
@@ -367,9 +367,10 @@ impl ControllerManager {
         let rt_was = self.rt_prev;
         self.rt_prev = rt_pressed;
 
-        // Back paddles (user mapping): L4 = Ctrl hold, L5 = Alt hold,
-        // R4 = Win hold — same hold mechanic as the old L2 shift (press on
-        // rising edge, release on falling) — and R5 closes the keyboard.
+        // Back paddles (user mapping): L4 = Ctrl hold, L5 = AltGr hold
+        // (Polish diacritics!), R4 = Win hold — same hold mechanic as the old
+        // L2 shift (press on rising edge, release on falling) — and R5 closes
+        // the keyboard.
         let l4 = b.buttons & btn::LGRIP1 != 0;
         let l5 = b.buttons & btn::LGRIP2 != 0;
         let r4 = b.buttons & btn::RGRIP1 != 0;
@@ -381,12 +382,12 @@ impl ControllerManager {
             self.kb.release_code(K::KEY_LEFTCTRL);
             self.ctrl_held = false;
         }
-        if l5 && !self.alt_held {
-            self.kb.press_code(K::KEY_LEFTALT);
-            self.alt_held = true;
-        } else if !l5 && self.alt_held {
-            self.kb.release_code(K::KEY_LEFTALT);
-            self.alt_held = false;
+        if l5 && !self.altgr_held {
+            self.kb.press_code(K::KEY_RIGHTALT);
+            self.altgr_held = true;
+        } else if !l5 && self.altgr_held {
+            self.kb.release_code(K::KEY_RIGHTALT);
+            self.altgr_held = false;
         }
         if r4 && !self.win_held {
             self.kb.press_code(K::KEY_LEFTMETA);
@@ -458,10 +459,7 @@ impl ControllerManager {
         if state.is_ctrl_latched() || self.ctrl_held {
             highlights.insert(K::KEY_LEFTCTRL);
         }
-        if state.is_alt_latched() || self.alt_held {
-            highlights.insert(K::KEY_LEFTALT);
-        }
-        if state.is_altgr_latched() {
+        if state.is_altgr_latched() || self.altgr_held {
             highlights.insert(K::KEY_RIGHTALT);
         }
         if state.is_win_latched() || self.win_held {
