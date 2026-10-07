@@ -70,7 +70,6 @@ pub struct OskState {
     grid_dims: Mutex<Vec<usize>>,
     shift_held: AtomicBool,
     shift_latched: AtomicBool,
-    caps_on: AtomicBool,
     emoji_open: AtomicBool,
     highlighted: Mutex<HashSet<u16>>,
     lpad_touched: AtomicBool,
@@ -94,7 +93,6 @@ impl OskState {
             grid_dims: Mutex::new(Vec::new()),
             shift_held: AtomicBool::new(false),
             shift_latched: AtomicBool::new(false),
-            caps_on: AtomicBool::new(false),
             emoji_open: AtomicBool::new(false),
             highlighted: Mutex::new(HashSet::new()),
             lpad_touched: AtomicBool::new(false),
@@ -136,11 +134,11 @@ impl OskState {
     pub fn set_shift_latched(&self, v: bool) {
         self.shift_latched.store(v, Ordering::SeqCst);
     }
+    /// Live Caps Lock state read from the X server's modifier mask
+    /// (adusk.state `is_caps_on`): physical and injected CapsLock stay in
+    /// sync automatically.
     pub fn is_caps_on(&self) -> bool {
-        self.caps_on.load(Ordering::SeqCst)
-    }
-    pub fn toggle_caps(&self) {
-        self.caps_on.store(!self.is_caps_on(), Ordering::SeqCst);
+        crate::sdl3::x11_caps_on()
     }
     pub fn is_emoji_open(&self) -> bool {
         self.emoji_open.load(Ordering::SeqCst)

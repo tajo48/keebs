@@ -219,48 +219,6 @@ impl LibusbSession {
         rc == 0 && transferred as usize == data.len()
     }
 
-    /// Send a 65-byte haptic OUTPUT report over every plausible channel —
-    /// the Python deck driver's triple: a full interrupt-OUT write, a
-    /// 64-byte (unnumbered) interrupt-OUT write, and a class SET_REPORT
-    /// (OUTPUT type) control transfer. Duplicates are benign (same tone
-    /// restarted); we can't detect which channel the firmware honors.
-    pub fn send_output(&self, report: &[u8; 65]) -> bool {
-        let mut ok = self.write(report);
-        if !ok {
-            ok = self.write(&report[..64]);
-        }
-        let rc = unsafe {
-            (self.control)(
-                self.handle,
-                0x21,                           // class | interface | host-to-device
-                0x09,                           // SET_REPORT
-                (0x02 << 8) | report[0] as u16, // OUTPUT report
-                self.iface as u16,
-                report.as_ptr().add(1) as *mut u8,
-                64,
-                1000,
-            )
-        };
-        ok || rc == 64
-    }
-
-    /// Send an arbitrary feature-report payload (report id via wValue).
-    pub fn send_feature_payload(&self, report_id: u8, payload: &[u8]) -> bool {
-        let rc = unsafe {
-            (self.control)(
-                self.handle,
-                0x21,
-                0x09,
-                (0x03 << 8) | report_id as u16,
-                self.iface as u16,
-                payload.as_ptr() as *mut u8,
-                payload.len() as u16,
-                1000,
-            )
-        };
-        rc == payload.len() as i32
-    }
-
     /// SET_REPORT OUTPUT with the CLEAN body (id only in wValue).
     pub fn control_output(&self, report_id: u8, body: &[u8]) -> bool {
         let rc = unsafe {

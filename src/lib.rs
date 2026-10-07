@@ -1,6 +1,5 @@
 pub mod deck;
 pub mod events;
-pub mod gamepad;
 pub mod lizardguard;
 pub mod manager;
 pub mod osk_main;

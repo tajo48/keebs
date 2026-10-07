@@ -45,8 +45,8 @@ pub fn run(stop: Arc<StopFlag>) {
         }
     }
 
-    // Gamepad rumble (the Deck's actual haptics transport).
-    crate::gamepad::init();
+    // Gamepad subsystem no longer needed — Deck haptics are firmware-native
+    // (lizard stays enabled, lizardguard swallows the output).
 
     // Controller input thread (owns the device, lizard OFF).
     {

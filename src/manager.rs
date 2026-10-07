@@ -56,14 +56,9 @@ impl Device {
             Device::Triton(sc) => {
                 sc.haptic_click(550, -6, 5, 18);
             }
-            // Deck: fire BOTH the classic 0x8F dual-vibration report AND the
-            // Python driver's 0x83 trackpad tones. The firmware ACKs the 0x8F
-            // without buzzing (accepted ≠ felt), so the 0x83 channels — the
-            // only haptics the Python deck driver ever sent — must not be
-            // short-circuited by it. Duplicates are benign (same tick twice
-            // at worst).
+            // Deck: 0x83 trackpad tones (the Python driver's only mechanism);
+            // native firmware haptics ride on top via lizardguard.
             Device::Deck(d) => {
-                d.rumble(0xFFFF, 0xFFFF);
                 d.haptic_click(550, -6, 5);
             }
         }
@@ -76,7 +71,6 @@ impl Device {
                 sc.haptic_pad_click();
             }
             Device::Deck(d) => {
-                d.rumble(0xFFFF, 0xFFFF);
                 d.haptic_pad_click();
             }
         }
@@ -278,7 +272,8 @@ impl ControllerManager {
                 self.saw_x_during_steam = true;
             } else {
                 self.kb.tap_code(K::KEY_CAPSLOCK);
-                state.toggle_caps();
+                // Caps state is read live from the X server modifier mask —
+                // no manual tracking needed.
             }
         }
         self.l3_was_pressed = l3_pressed;

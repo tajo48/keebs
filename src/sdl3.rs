@@ -487,9 +487,85 @@ pub fn make_window_no_focus(window: SdlWindow) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Caps Lock state (port of adusk.state `_x11_caps` + `is_caps_on`): read the
+// keyboard modifier mask via XQueryPointer on the root window — LockMask =
+// Caps Lock. Queried LIVE, so physical CapsLock, OSK-injected CapsLock and
+// anything else stay in sync automatically (no manual toggle tracking, which
+// is what desynced the glyphs before). Uses its own cached X connection.
+// ---------------------------------------------------------------------------
+
+const X_LOCK_MASK: u32 = 1 << 1;
+
+struct X11Caps {
+    _lib: Library,
+    disp: *mut c_void,
+    root: u64,
+}
+unsafe impl Send for X11Caps {}
+unsafe impl Sync for X11Caps {}
+
+type XOpenDisplayFn = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+type XDefaultRootWindowFn = unsafe extern "C" fn(*mut c_void) -> u64;
+type XQueryPointerFn = unsafe extern "C" fn(
+    *mut c_void,
+    u64,
+    *mut u64,
+    *mut u64,
+    *mut i32,
+    *mut i32,
+    *mut i32,
+    *mut i32,
+    *mut u32,
+) -> i32;
+
+static X11_CAPS: OnceLock<Option<X11Caps>> = OnceLock::new();
+
+fn x11_caps_conn() -> Option<&'static X11Caps> {
+    X11_CAPS
+        .get_or_init(|| unsafe {
+            let lib = Library::new("libX11.so.6").ok()?;
+            let open: XOpenDisplayFn = *lib.get(b"XOpenDisplay\0").ok()?;
+            let root_fn: XDefaultRootWindowFn = *lib.get(b"XDefaultRootWindow\0").ok()?;
+            let disp = open(std::ptr::null());
+            if disp.is_null() {
+                return None;
+            }
+            Some(X11Caps {
+                _lib: lib,
+                disp,
+                root: root_fn(disp),
+            })
+        })
+        .as_ref()
+}
+
+/// True if the OS currently has Caps Lock toggled on.
+pub fn x11_caps_on() -> bool {
+    let Some(caps) = x11_caps_conn() else {
+        return false;
+    };
+    // SAFETY: standard core-X11 query on our dedicated connection.
+    unsafe {
+        let query: XQueryPointerFn = match caps._lib.get(b"XQueryPointer\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+        let mut rr: u64 = 0;
+        let mut cr: u64 = 0;
+        let mut rx: i32 = 0;
+        let mut ry: i32 = 0;
+        let mut wx: i32 = 0;
+        let mut wy: i32 = 0;
+        let mut mask: u32 = 0;
+        let rc = query(
+            caps.disp, caps.root, &mut rr, &mut cr, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
+        );
+        rc != 0 && (mask & X_LOCK_MASK) != 0
+    }
+}
+
 unsafe fn x11_disable_input(display: *mut c_void, xid: u64) -> bool {
-    // SAFETY: classic Xlib usage; the dlopen'd libX11 outlives every call in
-    // this function (dropped at scope exit after XFlush).
     unsafe {
         let Ok(lib) = Library::new("libX11.so.6") else {
             return false;

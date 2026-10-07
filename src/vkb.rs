@@ -506,11 +506,9 @@ impl Dispatcher<'_> {
         match key.behavior {
             Behavior::Generic => {
                 self.kb.tap_code(keycode);
-                if keycode == K::KEY_CAPSLOCK {
-                    // Linux/Wayland doesn't propagate the latched-caps state
-                    // through XKB — track it manually.
-                    self.state.toggle_caps();
-                }
+                // Caps Lock state is read live from the X server modifier
+                // mask by the renderer — injected capslock shows up on the
+                // next frame with no manual tracking.
             }
             Behavior::Shift => self.toggle_shift(),
             Behavior::Paste => {

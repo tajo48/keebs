@@ -14,18 +14,17 @@ use crate::osk_state::{InputState, OskState};
 use crate::sdl3::{self, SDL_Color, SDL_FRect, sdl};
 use crate::vkb::{Align, KeyDef, KeyLayout, VAlign, VirtualKeyboard};
 
-// Steam Big Picture palette (screen.py class defaults — the DefaultTheme
-// fallbacks).
-const BG: (u8, u8, u8) = (0x23, 0x26, 0x2E);
-const KEY_INACTIVE: (u8, u8, u8) = (0x0E, 0x14, 0x1B);
-const KEY_HOVER: (u8, u8, u8) = (0xFF, 0xFF, 0xFF);
-const KEY_CLICK: (u8, u8, u8) = (0x1A, 0x9F, 0xFF);
-const MODIFIER_IDLE: (u8, u8, u8) = (0x00, 0x00, 0x00);
-const TEXT_INACTIVE: (u8, u8, u8) = (0xEE, 0xF3, 0xF7);
-const TEXT_HOVER: (u8, u8, u8) = (0x0E, 0x14, 0x1B);
-const TEXT_CLICK: (u8, u8, u8) = (0xEE, 0xF3, 0xF7);
-const KEY_BEVEL: (u8, u8, u8) = (0x4A, 0x5D, 0x70);
-const SHADOW_LABEL: (u8, u8, u8) = (120, 123, 127);
+// Catppuccin Frappé palette, blue accent (https://catppuccin.com/palette).
+const BG: (u8, u8, u8) = (0x29, 0x2C, 0x3C); // mantle
+const KEY_INACTIVE: (u8, u8, u8) = (0x41, 0x45, 0x59); // surface0
+const KEY_HOVER: (u8, u8, u8) = (0x8C, 0xAA, 0xEE); // blue
+const KEY_CLICK: (u8, u8, u8) = (0x85, 0xC1, 0xDC); // sapphire
+const MODIFIER_IDLE: (u8, u8, u8) = (0x23, 0x26, 0x34); // crust
+const TEXT_INACTIVE: (u8, u8, u8) = (0xC6, 0xD3, 0xF5); // text
+const TEXT_HOVER: (u8, u8, u8) = (0x29, 0x2C, 0x3C); // mantle (dark on blue)
+const TEXT_CLICK: (u8, u8, u8) = (0x23, 0x26, 0x34); // crust
+const KEY_BEVEL: (u8, u8, u8) = (0x51, 0x57, 0x6D); // surface1
+const SHADOW_LABEL: (u8, u8, u8) = (0x73, 0x79, 0x94); // overlay0
 
 const BASE_HEIGHT: f32 = 369.0;
 
@@ -446,7 +445,7 @@ impl Screen {
             let (color, alpha) = if ptr.state == InputState::Click {
                 (KEY_CLICK, 220u8)
             } else {
-                ((0xFF, 0xFF, 0xFF), 150u8)
+                (KEY_HOVER, 150u8)
             };
             self.fill_circle(cx, cy, 13.0, color, alpha);
         }
