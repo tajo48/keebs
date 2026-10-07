@@ -1,6 +1,9 @@
 # keebs
 
-Rust port of the SteamlessKeyboard **Linux app**.
+**Linux-only, by design.** Rust port of the SteamlessKeyboard **Linux app** —
+uinput injection, hidraw/libusb device access and X11/XWayland windowing
+do not exist on Windows, and never will here. The helper trees' Windows
+code is reference material only.
 
 ## Running
 
