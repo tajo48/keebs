@@ -44,6 +44,18 @@ font); it also listens for the mouse in case you want to click-type:
 Mouse also works on the OSK directly: hover highlights, left-click presses,
 right-click = Shift, back/forward buttons = Backspace/Space.
 
+### Auto-show on Wayland
+
+| environment | behavior |
+|---|---|
+| Wayland (KDE Plasma, sway, Hyprland, wlroots) | focusing any text field **auto-shows** the OSK; blur auto-hides it (with a 250 ms grace period) |
+| GNOME (Mutter) | manual toggle only — Mutter has no input-method-v2 support from a plain client |
+| X11 sessions | manual toggle only |
+
+Manual toggles always win: close the OSK while a field is focused and it
+stays closed until the field loses focus; a manually opened OSK is never
+auto-hidden.
+
 The bottom row has sticky **Ctrl**, **Alt**, **AltGr** (Right Alt — Polish
 ą/ę/ś… on the programmer layout) and **Win** keys (click once — the real
 modifier is held and the key highlights — then tap keys; click again or

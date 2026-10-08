@@ -15,7 +15,7 @@ use crate::classic::ClassicController;
 use crate::deck::DeckController;
 use crate::diag;
 use crate::events::EventMapper;
-use crate::osk_state::{Dir, InputState, OskState, Pointer};
+use crate::osk_state::{Dir, InputState, OskEvent, OskState, Pointer};
 use crate::sc::{SCI_NULL, SciInput, buttons as btn};
 use crate::triton::SteamController;
 use crate::uinput::{Keyboard, Mouse, keys as K};
@@ -379,9 +379,9 @@ impl ControllerManager {
         if r5 && !self.r5_was_pressed {
             // R5 toggles: close when open, OPEN when closed (user mapping).
             if state.is_visible() {
-                state.close();
+                state.decide(OskEvent::ManualClose);
             } else {
-                state.show();
+                state.decide(OskEvent::ManualOpen);
             }
         }
         self.r5_was_pressed = r5;
@@ -389,7 +389,7 @@ impl ControllerManager {
         // B closes the keyboard, on rising edge.
         let b_pressed = b.buttons & btn::B != 0;
         if b_pressed && !self.b_was_pressed {
-            state.close();
+            state.decide(OskEvent::ManualClose);
         }
         self.b_was_pressed = b_pressed;
 
@@ -468,7 +468,7 @@ impl ControllerManager {
         let x_now = b.buttons & btn::X != 0;
         if steam_now && !self.steam_was_pressed {
             // Steam ALONE opens (user mapping) — rising edge shows the OSK.
-            state.show();
+            state.decide(OskEvent::ManualOpen);
             self.saw_x_during_steam = true;
         }
         let _ = x_now;

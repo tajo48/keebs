@@ -52,6 +52,21 @@ impl Dir {
     }
 }
 
+/// Show/hide decision inputs to `OskState::decide` — the manual side comes
+/// from the controller mapper (manager.rs) and key dispatcher (vkb.rs), the
+/// IM side from the Wayland monitor thread (wl_im.rs).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OskEvent {
+    /// Manual open (Steam+X chord, Steam-alone open, R5 toggle-open).
+    ManualOpen,
+    /// Manual close (B, L4/L5 close, Steam released, Move key).
+    ManualClose,
+    /// A text input gained focus (Wayland input-method-v2 activate).
+    ImActivate,
+    /// The focused text input went away (deactivate, after grace period).
+    ImDeactivate,
+}
+
 /// A queued "click at this fractional coord" (`is_repeat` = hold-to-repeat
 /// hit, honored only over repeatable keys).
 #[derive(Clone, Copy)]
@@ -87,6 +102,15 @@ pub struct OskState {
     click_queue: Mutex<Vec<ClickEvent>>,
     pointers: Mutex<[Pointer; 2]>,
     haptic_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+
+    // -- auto-show state machine (plan.md) --------------------------------
+    /// The current visibility was opened by the Wayland IM auto-show.
+    auto_shown: AtomicBool,
+    /// User manually dismissed an auto-shown OSK: keep it down while the
+    /// same text field stays focused (cleared on deactivate).
+    suppress_until_deactivate: AtomicBool,
+    /// Manually opened: auto-hide is disabled until the next manual close.
+    manual_hold: AtomicBool,
 }
 
 impl OskState {
@@ -119,6 +143,9 @@ impl OskState {
             click_queue: Mutex::new(Vec::new()),
             pointers: Mutex::new([Pointer::INACTIVE, Pointer::INACTIVE]),
             haptic_hook: Mutex::new(None),
+            auto_shown: AtomicBool::new(false),
+            suppress_until_deactivate: AtomicBool::new(false),
+            manual_hold: AtomicBool::new(false),
         }
     }
 
@@ -134,6 +161,73 @@ impl OskState {
     /// process that means "hide", not "quit"; Ctrl-C quits the app).
     pub fn close(&self) {
         self.visible.store(false, Ordering::SeqCst);
+    }
+
+    // -- auto-show state machine (plan.md phase 2) -------------------------
+
+    /// Single writer for show/hide decisions: the controller mapper and the
+    /// Wayland IM monitor both funnel their intents through here, so the two
+    /// threads can't fight over `visible`.
+    ///
+    /// Rules:
+    /// - manual open wins over everything (`manual_hold` blocks auto-hide
+    ///   until the next manual close),
+    /// - manual close of an auto-shown OSK suppresses auto-show until the
+    ///   IM deactivates, so it doesn't pop back up while still focused,
+    /// - IM activate auto-shows (unless held/suppressed), IM deactivate
+    ///   auto-hides (unless manually held). The 250 ms deactivate grace
+    ///   period lives in the wl thread (`wl_im.rs`), not here.
+    pub fn decide(&self, ev: OskEvent) -> bool {
+        match ev {
+            OskEvent::ManualOpen => {
+                self.manual_hold.store(true, Ordering::SeqCst);
+                self.suppress_until_deactivate
+                    .store(false, Ordering::SeqCst);
+                self.auto_shown.store(false, Ordering::SeqCst);
+                if !self.is_visible() {
+                    self.show();
+                    true
+                } else {
+                    false
+                }
+            }
+            OskEvent::ManualClose => {
+                self.manual_hold.store(false, Ordering::SeqCst);
+                if self.auto_shown.swap(false, Ordering::SeqCst) {
+                    self.suppress_until_deactivate.store(true, Ordering::SeqCst);
+                }
+                if self.is_visible() {
+                    self.close();
+                    true
+                } else {
+                    false
+                }
+            }
+            OskEvent::ImActivate => {
+                // A fresh activation is a new field focus: a stale suppress
+                // flag from the previous activation no longer applies.
+                self.suppress_until_deactivate
+                    .store(false, Ordering::SeqCst);
+                if !self.manual_hold.load(Ordering::SeqCst) && !self.is_visible() {
+                    self.auto_shown.store(true, Ordering::SeqCst);
+                    self.show();
+                    true
+                } else {
+                    false
+                }
+            }
+            OskEvent::ImDeactivate => {
+                self.auto_shown.store(false, Ordering::SeqCst);
+                self.suppress_until_deactivate
+                    .store(false, Ordering::SeqCst);
+                if !self.manual_hold.load(Ordering::SeqCst) && self.is_visible() {
+                    self.close();
+                    true
+                } else {
+                    false
+                }
+            }
+        }
     }
     pub fn should_close_app(&self) -> bool {
         self.close_app.load(Ordering::SeqCst)
