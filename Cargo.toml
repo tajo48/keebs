@@ -8,6 +8,3 @@ ctrlc = "3"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
 libc = "0.2"
 libloading = "0.8"
-wayland-backend = "0.3.17"
-wayland-client = "0.31.15"
-wayland-scanner = "0.31.11"

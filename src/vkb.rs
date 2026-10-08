@@ -5,7 +5,7 @@
 //! crate builds standalone; the loaded copy keeps the same width weights,
 //! modifier styling and behaviors as the live config.
 
-use crate::osk_state::{Dir, OskEvent, OskState};
+use crate::osk_state::{Dir, OskState};
 use crate::uinput::{Keyboard, keys as K};
 
 // Hold-to-repeat cadence shared by EVERY "press a key" input path —
@@ -710,7 +710,7 @@ impl Dispatcher<'_> {
                 // Unshifted Move closes the keyboard (Shift+Move cycles the
                 // window position in the Python app — position cycle isn't
                 // ported yet, so it just closes too).
-                self.state.decide(OskEvent::ManualClose);
+                self.state.close();
             }
         }
         if use_shift_key && self.state.is_shift_held() {

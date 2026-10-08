@@ -60,13 +60,6 @@ pub fn run(stop: Arc<StopFlag>) {
         std::thread::spawn(move || manager::input_thread(st, sp));
     }
 
-    // Wayland text-input monitor: auto-show on field focus, auto-hide on
-    // blur (plan.md). Returns None on X11 / no Wayland — manual toggle only,
-    // identical to the previous behavior.
-    if crate::wl_im::spawn(Arc::clone(&state), Arc::clone(&stop)).is_some() {
-        diag::log("osk: wayland input-method monitor spawned");
-    }
-
     let mut screen = Screen::new(&state);
     let mut vkb = VirtualKeyboard::new(crate::vkb::default_layout(), w, h);
     state.set_grid_dims(vkb.keys.iter().map(|r| r.len()).collect());
