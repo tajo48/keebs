@@ -152,17 +152,25 @@ pub fn spawn(osk: Arc<OskState>, stop: Arc<StopFlag>) -> Option<JoinHandle<()>> 
 }
 
 /// Sibling `wayland-*` socket names in `XDG_RUNTIME_DIR` (the input-method
-/// socket is sometimes published next to the regular one).
+/// socket is sometimes published next to the regular one). Only proper
+/// socket names match: `wayland-` followed by digits, so lock files like
+/// `wayland-0.lock` are skipped.
 fn sibling_sockets() -> Vec<OsString> {
     let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
         return Vec::new();
+    };
+    let is_socket_name = |n: &OsString| -> bool {
+        let Some(suffix) = n.as_encoded_bytes().strip_prefix(b"wayland-") else {
+            return false;
+        };
+        !suffix.is_empty() && suffix.iter().all(u8::is_ascii_digit)
     };
     let mut out: Vec<OsString> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.file_name())
-        .filter(|n| n.as_encoded_bytes().starts_with(b"wayland-"))
+        .filter(|n| is_socket_name(n))
         .collect();
     out.sort();
     out
