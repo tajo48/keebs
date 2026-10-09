@@ -1,5 +1,13 @@
 # keebs
 
+## Credits
+
+**Huge credits to [SteamlessKeyboard](https://github.com/PietPetGit/SteamlessKeyboard)**
+by [PietPetGit](https://github.com/PietPetGit) — keebs is a Rust port of its
+Linux app (controller drivers, lizard logic, chord handling and the
+on-screen keyboard all trace back to that Python codebase). None of this
+would exist without it. Go star the original.
+
 **Linux-only, by design.** Rust port of the SteamlessKeyboard **Linux app** —
 uinput injection, hidraw/libusb device access and X11/XWayland windowing
 do not exist on Windows, and never will here. The helper trees' Windows
