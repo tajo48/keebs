@@ -43,7 +43,7 @@
 
             meta = with pkgs.lib; {
               description = "SteamlessKeyboard Linux input core + on-screen keyboard (Rust port)";
-              license = licenses.gpl3;
+              license = licenses.mit;
               platforms = platforms.linux;
               mainProgram = "keebs";
             };

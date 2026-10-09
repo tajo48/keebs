@@ -19,6 +19,20 @@ Or hack on it in the keebs dev shell:
 nix develop .#keebs -c cargo run --release
 ```
 
+## Install (NixOS flake)
+
+```nix
+# flake.nix
+inputs.keebs.url = "github:tajo48/keebs";
+
+# a NixOS module (package on PATH + udev uaccess rules + GNOME autostart)
+environment.systemPackages = [ inputs.keebs.packages.${pkgs.system}.keebs ];
+```
+
+The binary needs write access to `/dev/uinput` and the Valve hidraw devices
+(`ATTRS{idVendor}=="28de"`) — grant them to the active seat with
+`TAG+="uaccess"` udev rules. Licensed under the MIT license (see LICENSE).
+
 Starts hidden in the background, listening for the controller.
 **Steam + X** opens the on-screen keyboard (Steam-dark theme, Selawik
 font); it also listens for the mouse in case you want to click-type:
