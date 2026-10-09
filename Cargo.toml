@@ -2,9 +2,12 @@
 name = "keebs"
 version = "0.1.0"
 edition = "2024"
+description = "SteamlessKeyboard Linux input core + on-screen keyboard"
+license = "MIT"
+repository = "https://github.com/tajo48/keebs"
 
 [dependencies]
 ctrlc = "3"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
 libc = "0.2"
-libloading = "0.8"
+libloading = "0.9"
