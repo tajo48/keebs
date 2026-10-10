@@ -87,9 +87,9 @@ pub fn run(stop: Arc<StopFlag>) {
     let mut last_active = Instant::now();
     let mut limiter = FrameLimiter::new(ACTIVE_FPS);
     let mut next_slow_tick = Instant::now();
-    // Focus probe rate limiter (per-dispatch probes would spawn a process per
-    // key tap — 0.5 Hz is plenty to see where keys are landing).
-    let mut last_focus_probe = Instant::now() - Duration::from_secs(10);
+    // Niri focus guard, armed only while the OSK is visible (None = hidden or
+    // not running under niri).
+    let mut focus_guard: Option<crate::niri_diag::FocusGuard> = None;
     // The first motion event after open just records the anchor (see adusk.py).
     let mut mouse_anchor: Option<(i32, i32)> = None;
     let mut mouse_repeat_at: Option<Instant> = None;
@@ -171,6 +171,7 @@ pub fn run(stop: Arc<StopFlag>) {
                 state.refresh_caps();
                 crate::niri_diag::log_focus("osk-open");
                 crate::niri_diag::log_windows_digest();
+                focus_guard = Some(crate::niri_diag::FocusGuard::start());
                 // Focus changes can land a few event-loop iterations after
                 // the map — probe again once, slightly delayed.
                 std::thread::spawn(|| {
@@ -185,6 +186,7 @@ pub fn run(stop: Arc<StopFlag>) {
                 .release_shift();
                 screen.hide();
                 mouse_repeat_at = None;
+                drop(focus_guard.take());
                 crate::niri_diag::log_focus("osk-close");
             }
             was_visible = cur_visible;
@@ -220,15 +222,14 @@ pub fn run(stop: Arc<StopFlag>) {
                     }
                     let kd = &vkb.keys[r][c];
                     diag::log(&format!("osk: dispatch pad-click '{}' ({r},{c})", kd.label));
+                    // Niri: if the OSK toplevel stole focus, give it back
+                    // BEFORE injecting — otherwise the key lands in the OSK.
+                    crate::niri_diag::ensure_focus_not_ours();
                     Dispatcher {
                         kb: &kb,
                         state: &state,
                     }
                     .dispatch(kd);
-                    if last_focus_probe.elapsed() >= Duration::from_secs(2) {
-                        crate::niri_diag::log_focus("dispatch");
-                        last_focus_probe = Instant::now();
-                    }
                     // No second buzz here: the pad PRESS already popped via
                     // pad_click_haptic — a dispatch tick made every click
                     // double-buzz (user: "leave only the first one").
@@ -258,16 +259,15 @@ pub fn run(stop: Arc<StopFlag>) {
                     }
                     let kd = &vkb.keys[r][c];
                     diag::log(&format!("osk: dispatch key '{}' ({r},{c})", kd.label));
+                    // Niri focus restore before injection (mouse clicks on the
+                    // OSK focus it — niri has click-to-focus).
+                    crate::niri_diag::ensure_focus_not_ours();
                     Dispatcher {
                         kb: &kb,
                         state: &state,
                     }
                     .dispatch(kd);
                     state.haptic_tick();
-                    if last_focus_probe.elapsed() >= Duration::from_secs(2) {
-                        crate::niri_diag::log_focus("dispatch");
-                        last_focus_probe = Instant::now();
-                    }
                 }
             }
 
