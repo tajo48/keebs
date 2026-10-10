@@ -135,7 +135,8 @@ impl Screen {
             // UTILITY/NOT_FOCUSABLE — on real SDL3 those values collide with
             // TOOLTIP/POPUP_MENU, which demand a parent window. The no-focus
             // behavior comes from runtime calls (activate-when-shown hint,
-            // X11 WM hints), like adusk.py.
+            // X11 WM hints; override-redirect under XWayland bridges), like
+            // adusk.py.
             let title = CString::new("").unwrap();
             let base_flags = sdl3::SDL_WINDOW_BORDERLESS
                 | sdl3::SDL_WINDOW_HIDDEN
@@ -175,6 +176,23 @@ impl Screen {
             );
             if x11 {
                 sdl3::make_window_no_focus(window);
+                // Under a Wayland session the X11 driver means an XWayland
+                // bridge (xwayland-satellite on niri & co.), which IGNORES
+                // WM_HINTS.input — the OSK toplevel steals compositor focus
+                // on map/click and the injected keystrokes land in the OSK
+                // itself. Override-redirect makes it an unmanaged popup
+                // (dmenu-style) no compositor can focus. Real X11 keeps the
+                // hint path — WMs honor it there. KEEBS_NO_OVERRIDE_REDIRECT=1
+                // opts out if a bridge refuses to display OR windows.
+                let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+                let opt_out = std::env::var_os("KEEBS_NO_OVERRIDE_REDIRECT").is_some();
+                if on_wayland && !opt_out {
+                    if sdl3::make_window_override_redirect(window) {
+                        println!("osk: override-redirect ON (xwayland bridge can't focus it)");
+                    } else {
+                        eprintln!("osk: override-redirect FAILED (libX11 missing?)");
+                    }
+                }
             }
 
             let renderer = (s.create_renderer)(window, std::ptr::null());

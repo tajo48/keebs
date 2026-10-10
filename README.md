@@ -127,6 +127,14 @@ Windows tree.
 
 ## Design notes kept from the Python original
 
+- **No-focus under XWayland bridges (niri & co.)**: `WM_HINTS.input=False`
+  is only honored by real X11 WMs — xwayland-satellite maps every managed
+  toplevel as a focusable Wayland window, so the OSK stole keyboard focus
+  and the injected keys landed in itself. Under a Wayland session (`WAYLAND_DISPLAY`
+  set) the window is therefore flipped to override-redirect while still
+  unmapped: an unmanaged, dmenu-style popup no compositor can focus, while
+  pointer input still works. Real X11 keeps the WM-hint path; set
+  `KEEBS_NO_OVERRIDE_REDIRECT=1` to opt out.
 - **Lizard persistence trap (Triton)**: runtime lizard writes can stick in
   firmware; only a power-cycle restores defaults. The driver never touches
   lizard at runtime on Linux — the watchdog thread exists purely for

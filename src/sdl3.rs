@@ -533,6 +533,102 @@ pub fn raise_window(window: SdlWindow) {
 }
 
 // ---------------------------------------------------------------------------
+// XWayland focus-steal fix: override-redirect.
+//
+// WM_HINTS.input=False is only honored by real X11 window managers. XWayland
+// bridges (xwayland-satellite under niri, and to a degree native XWayland)
+// map every managed toplevel as a regular Wayland window and ignore the
+// input hint — the compositor then focuses the OSK on map and on click, and
+// the uinput-injected keystrokes land in the OSK itself instead of the app
+// behind it. Override-redirect makes the window unmanaged (dmenu-style): the
+// bridge displays it at its X coordinates as a popup no compositor ever
+// focuses, while pointer events still reach it (same path X11 menus use).
+// ---------------------------------------------------------------------------
+
+/// Core X11 `XSetWindowAttributes` (LP64 layout; field order must match
+/// Xlib exactly — only `override_redirect` is ever set).
+#[repr(C)]
+struct XSetWindowAttributes {
+    background_pixmap: i64,
+    background_pixel: i64,
+    border_pixmap: i64,
+    border_pixel: i64,
+    bit_gravity: i32,
+    win_gravity: i32,
+    backing_store: i32,
+    backing_planes: i64,
+    backing_pixel: i64,
+    save_under: i32,
+    event_mask: i64,
+    do_not_propagate_mask: i64,
+    override_redirect: i32,
+    colormap: i64,
+    cursor: i64,
+}
+
+const CW_OVERRIDE_REDIRECT: u64 = 1 << 9;
+
+type XChangeWindowAttributesFn =
+    unsafe extern "C" fn(*mut c_void, u64, u64, *mut XSetWindowAttributes) -> i32;
+
+/// Resolve the X11 connection + window ID SDL exposes for this window.
+/// Returns None for non-X11 windows or before the properties exist.
+// Opaque SDL handles are passed through to SDL's C ABI, never dereferenced.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+unsafe fn window_x11_handles(window: SdlWindow) -> Option<(*mut c_void, u64)> {
+    // SAFETY: standard core-X11 property reads on the window's own display.
+    unsafe {
+        let s = sdl();
+        let props = (s.get_window_properties)(window);
+        if props == 0 {
+            return None;
+        }
+        let display = (s.get_pointer_property)(
+            props,
+            X11_DISPLAY_PROP.as_ptr() as *const c_char,
+            std::ptr::null_mut(),
+        );
+        let xid = (s.get_number_property)(props, X11_WINDOW_PROP.as_ptr() as *const c_char, 0);
+        if display.is_null() || xid <= 0 {
+            None
+        } else {
+            Some((display, xid as u64))
+        }
+    }
+}
+
+/// Flip the (still-unmapped) window into override-redirect mode so XWayland
+/// bridges display it as an unmanaged popup the compositor can never focus.
+/// Must run BEFORE the first map (it persists across later hide/show cycles).
+// Opaque SDL handles are passed through to SDL's C ABI, never dereferenced.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn make_window_override_redirect(window: SdlWindow) -> bool {
+    // SAFETY: standard core-X11 attribute change on the window's own display.
+    unsafe {
+        let Some((display, xid)) = window_x11_handles(window) else {
+            return false;
+        };
+        let Ok(lib) = Library::new("libX11.so.6") else {
+            return false;
+        };
+        let change: XChangeWindowAttributesFn = match lib.get(b"XChangeWindowAttributes\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+        let flush: XFlushFn = match lib.get(b"XFlush\0") {
+            Ok(f) => *f,
+            Err(_) => return false,
+        };
+        let mut attrs: XSetWindowAttributes = std::mem::zeroed();
+        attrs.override_redirect = 1;
+        let rc = change(display, xid, CW_OVERRIDE_REDIRECT, &mut attrs);
+        flush(display);
+        rc != 0
+        // `lib` drops (dlclose) here — all symbol use is complete by then.
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Caps Lock state (port of adusk.state `_x11_caps` + `is_caps_on`): read the
 // keyboard modifier mask via XQueryPointer on the root window — LockMask =
 // Caps Lock. Queried LIVE, so physical CapsLock, OSK-injected CapsLock and
