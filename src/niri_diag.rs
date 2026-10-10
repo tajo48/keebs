@@ -1,9 +1,6 @@
 //! niri IPC diagnostics + focus guard: when keebs runs as a niri child
 //! (NIRI_SOCKET is inherited), ask the compositor where keyboard focus sits
-//! and which keyboard devices it knows about. This tells apart the two
-//! failure modes that look identical from the outside — "the OSK stole focus
-//! again" vs "niri never picked up the uinput keyboard" — directly from one
-//! diag log.
+//! around OSK open/close — enough to debug focus issues from one diag log.
 //!
 //! It also hosts the niri FOCUS GUARD: xwayland-satellite maps every X window
 //! (override-redirect included) as a managed toplevel that niri focuses on
@@ -59,11 +56,6 @@ fn spawn_query(label: &'static str, json: bool, subject: &'static str, trunc: us
         };
         diag::log(&format!("niri[{label}]: {msg}"));
     });
-}
-
-/// Which keyboard devices niri knows (is `keebs-virtual-kb` among them?).
-pub fn log_keyboards() {
-    spawn_query("keyboards", true, "keyboards", 900);
 }
 
 /// Current keyboard-focus owner, with a context label.

@@ -77,9 +77,8 @@ pub fn run(stop: Arc<StopFlag>) {
         let st = Arc::clone(&state);
         kb.set_caps_hook(Box::new(move || st.refresh_caps()));
     }
-    // Niri diagnostics (no-ops outside niri): proves whether the uinput
-    // keyboard was picked up and where focus sits while the OSK types.
-    crate::niri_diag::log_keyboards();
+    // Niri diagnostics (no-ops outside niri): log where focus sits around
+    // OSK open/close, and keep it off the OSK window via the focus guard.
     crate::niri_diag::log_focus("startup");
 
     let mut was_visible = false;
