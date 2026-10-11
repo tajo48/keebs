@@ -7,6 +7,7 @@
 //! with the tray/settings port).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -23,6 +24,9 @@ use crate::vkb;
 
 // Stick thresholds / cadences (controller.py class constants).
 const STICK_DEADZONE: f32 = 14000.0;
+/// Session-start retry budget for the manager's uinput devices — same race
+/// as osk_main's INIT_TRIES (uaccess ACLs settle seconds after login).
+const INIT_TRIES: u32 = 30;
 const STICK_HOLD_DELAY: f32 = 0.5;
 const STICK_VOL_REPEAT: f32 = 0.021;
 const KBD_STICK_HOLD_DELAY: f32 = 0.35;
@@ -1173,10 +1177,32 @@ fn activate(
 /// policy on the active device per frame, exactly like the single-device
 /// path did.
 pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
-    let mut manager = match ControllerManager::new() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("osk: uinput init failed ({e}); controller input disabled");
+    // The manager opens three uinput devices single-shot; a transient EACCES
+    // at session start used to kill this thread permanently while the window
+    // kept running ("keebs works only after a manual restart"). Retry.
+    let mut manager = None;
+    for try_n in 1..=INIT_TRIES {
+        match ControllerManager::new() {
+            Ok(m) => {
+                manager = Some(m);
+                break;
+            }
+            Err(e) => {
+                diag::log(&format!(
+                    "osk: manager init failed ({e}); retry {try_n}/{INIT_TRIES}"
+                ));
+                if try_n < INIT_TRIES {
+                    let _ = stop.wait(Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    let mut manager = match manager {
+        Some(m) => m,
+        None => {
+            // No injection backend at all — quit the app rather than run as
+            // an unresponsive shell nobody can talk to.
+            state.close_app.store(true, Ordering::SeqCst);
             return;
         }
     };

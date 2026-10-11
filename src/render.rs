@@ -144,17 +144,27 @@ impl Screen {
             // keep-above for regular toplevels (see README).
             let title = CString::new("").unwrap();
             let base_flags = sdl3::SDL_WINDOW_BORDERLESS | sdl3::SDL_WINDOW_HIDDEN;
-            let window = (s.create_window)(
-                title.as_ptr(),
-                w,
-                h,
-                base_flags | sdl3::SDL_WINDOW_TRANSPARENT,
-            );
-            let (window, transparent) = if !window.is_null() {
-                (window, true)
-            } else {
-                ((s.create_window)(title.as_ptr(), w, h, base_flags), false)
-            };
+            // Retry: at session start the compositor connection can still be
+            // settling (same race as the uinput retries in osk_main/manager).
+            let mut window = std::ptr::null_mut();
+            let mut transparent = false;
+            for _ in 0..5 {
+                window = (s.create_window)(
+                    title.as_ptr(),
+                    w,
+                    h,
+                    base_flags | sdl3::SDL_WINDOW_TRANSPARENT,
+                );
+                if !window.is_null() {
+                    transparent = true;
+                    break;
+                }
+                window = (s.create_window)(title.as_ptr(), w, h, base_flags);
+                if !window.is_null() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(500));
+            }
             assert!(
                 !window.is_null(),
                 "SDL_CreateWindow failed: {}",

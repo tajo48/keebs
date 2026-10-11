@@ -18,6 +18,10 @@ const ACTIVE_FPS: f32 = 120.0;
 const VISIBLE_IDLE_FPS: f32 = 60.0;
 const HIDDEN_FPS: f32 = 15.0;
 const IDLE_GRACE: f32 = 0.4;
+/// Session-start retry budget: the GNOME autostart entry fires while udev
+/// uaccess ACLs / the Wayland environment are still settling, and a one-shot
+/// init failure used to kill keebs until the next manual restart.
+const INIT_TRIES: u32 = 30;
 /// Caps refresh cadence (sysfs LED read — cheap, but never per frame).
 const SLOW_TICK_MS: u64 = 250;
 
@@ -51,9 +55,20 @@ pub fn run(stop: Arc<StopFlag>) {
     state.height.store(h as usize, Ordering::SeqCst);
 
     unsafe {
-        if !(s.init)(sdl3::SDL_INIT_VIDEO | sdl3::SDL_INIT_EVENTS) {
-            eprintln!("osk: SDL_Init failed: {}", s.get_error_string());
-            return;
+        let mut tries = 0u32;
+        loop {
+            if (s.init)(sdl3::SDL_INIT_VIDEO | sdl3::SDL_INIT_EVENTS) {
+                break;
+            }
+            tries += 1;
+            let err = s.get_error_string();
+            diag::log(&format!(
+                "osk: SDL_Init failed ({err}); retry {tries}/{INIT_TRIES}"
+            ));
+            if tries >= INIT_TRIES || stop.wait(Duration::from_secs(1)) {
+                eprintln!("osk: SDL_Init failed after {tries} tries: {err}");
+                return;
+            }
         }
     }
 
@@ -71,10 +86,26 @@ pub fn run(stop: Arc<StopFlag>) {
     let mut vkb = VirtualKeyboard::new(crate::vkb::default_layout(), w, h);
     state.set_grid_dims(vkb.keys.iter().map(|r| r.len()).collect());
 
-    let kb = match crate::uinput::Keyboard::new() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("osk: uinput init failed ({e}); dispatch disabled");
+    // /dev/uinput can still lack the session's uaccess ACL when the
+    // autostart entry fires right at login — retry instead of exiting.
+    let kb = (1..=INIT_TRIES)
+        .map(|try_n| (try_n, crate::uinput::Keyboard::new()))
+        .find_map(|(try_n, res)| match res {
+            Ok(k) => Some(k),
+            Err(e) => {
+                diag::log(&format!(
+                    "osk: uinput init failed ({e}); retry {try_n}/{INIT_TRIES}"
+                ));
+                if try_n < INIT_TRIES {
+                    let _ = stop.wait(Duration::from_secs(1));
+                }
+                None
+            }
+        });
+    let kb = match kb {
+        Some(k) => k,
+        None => {
+            eprintln!("osk: uinput unavailable after {INIT_TRIES} tries; exiting");
             return;
         }
     };
