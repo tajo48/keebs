@@ -196,7 +196,7 @@ Windows tree.
       match app-id="keebs.osk"
       open-floating true
       open-focused false
-      default-floating-position x=0 y=0 relative-to="bottom-center"
+      default-floating-position x=0 y=0 relative-to="bottom"
       border {
           off
       }
