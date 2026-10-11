@@ -4,7 +4,6 @@ pub mod diag;
 pub mod events;
 pub mod lizardguard;
 pub mod manager;
-pub mod niri_diag;
 pub mod osk_main;
 pub mod osk_state;
 pub mod render;

@@ -75,8 +75,8 @@ pub struct OskState {
     altgr_latched: AtomicBool,
     win_latched: AtomicBool,
     emoji_open: AtomicBool,
-    /// Cached Caps Lock state — the live X11 query is a synchronous
-    /// Refreshed on a slow tick and whenever CapsLock is injected.
+    /// Cached Caps Lock state. Refreshed on a slow tick and whenever
+    /// CapsLock is injected.
     caps_on: AtomicBool,
     highlighted: Mutex<HashSet<u16>>,
     lpad_touched: AtomicBool,
@@ -181,12 +181,11 @@ impl OskState {
     pub fn is_caps_on(&self) -> bool {
         self.caps_on.load(Ordering::SeqCst)
     }
-    /// Re-read Caps Lock from the X server's modifier mask. Called on the
-    /// slow tick (~4 Hz) and right after a CapsLock injection, never per
-    /// frame. Prefers the PHYSICAL capslock LEDs (sysfs) — the X modifier
-    /// mask via XQueryPointer proved unreliable on XWayland (glow desynced
-    /// from actual letter case); falls back to the X mask when no LED nodes
-    /// are readable.
+    /// Re-read Caps Lock state. Called on the slow tick (~4 Hz) and right
+    /// after a CapsLock injection, never per frame. Reads the PHYSICAL
+    /// capslock LEDs (sysfs) — the only source that works under pure
+    /// Wayland (no global X modifier mask exists there). Without readable
+    /// LED nodes the glyph flip falls back to the injection hook only.
     pub fn refresh_caps(&self) {
         let led = (|| {
             let dir = std::fs::read_dir("/sys/class/leds").ok()?;
@@ -207,10 +206,7 @@ impl OskState {
             }
             saw.then_some(on)
         })();
-        self.caps_on.store(
-            led.unwrap_or_else(crate::sdl3::x11_caps_on),
-            Ordering::SeqCst,
-        );
+        self.caps_on.store(led.unwrap_or(false), Ordering::SeqCst);
     }
     pub fn is_emoji_open(&self) -> bool {
         self.emoji_open.load(Ordering::SeqCst)

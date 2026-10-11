@@ -16,12 +16,14 @@ use std::time::Duration;
 const UI_SET_EVBIT: u32 = 0x4004_5564;
 const UI_SET_KEYBIT: u32 = 0x4004_5565;
 const UI_SET_RELBIT: u32 = 0x4004_5566;
+const UI_SET_ABSBIT: u32 = 0x4004_5567;
 const UI_DEV_CREATE: u32 = 0x0000_5501;
 const UI_DEV_DESTROY: u32 = 0x0000_5502;
 
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
 
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
@@ -33,6 +35,67 @@ const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
 
 const BUS_VIRTUAL: u16 = 0x06;
+const BUS_USB: u16 = 0x03;
+
+/// Gamepad button/axis codes (linux/input-event-codes.h). Xbox-layout
+/// semantics: SOUTH=A, EAST=B, WEST=X, NORTH=Y.
+pub mod gp {
+    pub const BTN_SOUTH: u16 = 0x130;
+    pub const BTN_EAST: u16 = 0x131;
+    pub const BTN_NORTH: u16 = 0x133;
+    pub const BTN_WEST: u16 = 0x134;
+    pub const BTN_TL: u16 = 0x136; // LB
+    pub const BTN_TR: u16 = 0x137; // RB
+    pub const BTN_TL2: u16 = 0x138; // LT (digital view)
+    pub const BTN_TR2: u16 = 0x139; // RT (digital view)
+    pub const BTN_SELECT: u16 = 0x13a;
+    pub const BTN_START: u16 = 0x13b;
+    pub const BTN_MODE: u16 = 0x13c; // guide — never emitted (opens Big Picture)
+    pub const BTN_THUMBL: u16 = 0x13d; // L3
+    pub const BTN_THUMBR: u16 = 0x13e; // R3
+    pub const BTN_DPAD_UP: u16 = 0x220;
+    pub const BTN_DPAD_DOWN: u16 = 0x221;
+    pub const BTN_DPAD_LEFT: u16 = 0x222;
+    pub const BTN_DPAD_RIGHT: u16 = 0x223;
+
+    pub const ABS_X: u16 = 0x00; // left stick horizontal
+    pub const ABS_Y: u16 = 0x01; // left stick vertical
+    pub const ABS_Z: u16 = 0x02; // LT analog
+    pub const ABS_RX: u16 = 0x03; // right stick horizontal
+    pub const ABS_RY: u16 = 0x04; // right stick vertical
+    pub const ABS_RZ: u16 = 0x05; // RT analog
+
+    /// Every button the virtual pad can emit (for setup + neutral()).
+    pub const ALL_BUTTONS: &[u16] = &[
+        BTN_SOUTH,
+        BTN_EAST,
+        BTN_NORTH,
+        BTN_WEST,
+        BTN_TL,
+        BTN_TR,
+        BTN_TL2,
+        BTN_TR2,
+        BTN_SELECT,
+        BTN_START,
+        BTN_THUMBL,
+        BTN_THUMBR,
+        BTN_DPAD_UP,
+        BTN_DPAD_DOWN,
+        BTN_DPAD_LEFT,
+        BTN_DPAD_RIGHT,
+    ];
+
+    /// Every axis with its (min, max) range — xpad-style: sticks full i16
+    /// range, triggers 0..32767.
+    pub const ALL_AXES: &[(u16, i32, i32)] = &[
+        (ABS_X, -32768, 32767),
+        (ABS_Y, -32768, 32767),
+        (ABS_Z, 0, 32767),
+        (ABS_RX, -32768, 32767),
+        (ABS_RY, -32768, 32767),
+        (ABS_RZ, 0, 32767),
+    ];
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -76,7 +139,15 @@ struct RawUinput {
 }
 
 impl RawUinput {
-    fn create(name: &str, keys: &[u16], rels: &[u16]) -> io::Result<Self> {
+    /// `id`: (vendor, product, bustype) reported by the virtual device.
+    /// `abs`: axis code + (min, max) pairs, for EV_ABS devices.
+    fn create(
+        name: &str,
+        keys: &[u16],
+        rels: &[u16],
+        abs: &[(u16, i32, i32)],
+        id: (u16, u16, u16),
+    ) -> io::Result<Self> {
         let path = std::ffi::CString::new("/dev/uinput").unwrap();
         let mut fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
         if fd < 0 {
@@ -107,13 +178,19 @@ impl RawUinput {
                 set(UI_SET_RELBIT, *r as u32)?;
             }
         }
+        if !abs.is_empty() {
+            set(UI_SET_EVBIT, EV_ABS as u32)?;
+            for (a, _, _) in abs {
+                set(UI_SET_ABSBIT, *a as u32)?;
+            }
+        }
 
         let mut setup = UinputUserDev {
             name: [0; 80],
             id: UinputId {
-                bustype: BUS_VIRTUAL,
-                vendor: 0x28DE,
-                product: 0x0001,
+                bustype: id.2,
+                vendor: id.0,
+                product: id.1,
                 version: 1,
             },
             ff_effects_max: 0,
@@ -122,6 +199,13 @@ impl RawUinput {
             absfuzz: [0; 64],
             absflat: [0; 64],
         };
+        for (a, mn, mx) in abs {
+            let idx = *a as usize;
+            if idx < 64 {
+                setup.absmin[idx] = *mn;
+                setup.absmax[idx] = *mx;
+            }
+        }
         let bytes = name.as_bytes();
         let len = bytes.len().min(79);
         setup.name[..len].copy_from_slice(&bytes[..len]);
@@ -343,7 +427,13 @@ impl Keyboard {
             .map(|(_, c)| *c)
             .filter(|c| *c > 0 && *c < 0x2FF)
             .collect();
-        let dev = RawUinput::create("keebs-virtual-kb", &codes, &[])?;
+        let dev = RawUinput::create(
+            "keebs-virtual-kb",
+            &codes,
+            &[],
+            &[],
+            (0x28DE, 0x0001, BUS_VIRTUAL),
+        )?;
         // Compositors take a moment to notice a freshly created uinput
         // device; without a brief settle the first key event can be dropped.
         thread::sleep(Duration::from_millis(100));
@@ -463,6 +553,8 @@ impl Mouse {
             "keebs-virtual-mouse",
             &[BTN_LEFT, BTN_RIGHT, BTN_MIDDLE],
             &[REL_X, REL_Y, REL_WHEEL, REL_HWHEEL],
+            &[],
+            (0x28DE, 0x0002, BUS_VIRTUAL),
         )?;
         thread::sleep(Duration::from_millis(100));
         Ok(Self {
@@ -536,5 +628,99 @@ impl Drop for Mouse {
             let _ = dev.emit(EV_KEY, b, 0);
         }
         let _ = dev.syn();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Virtual gamepad (gamepad mode): presents the controller as an Xbox-layout
+// pad so games see native input.
+//
+// Default identity: vendor 0x28DE / product 0x11FF, name "Steam Virtual
+// Gamepad" — EXACTLY what Steam Input's own uinput outputs use. Steam's
+// controller manager must skip its own outputs (else it would recursively
+// grab them), so Steam does not turn this pad into a Steam Input controller,
+// while SDL2/SDL3 explicitly enumerate 28de:11ff devices as normal gamepads
+// for games (SDL_sysjoystick.c: MaybeAddDevice/LINUX_ScanSteamVirtualGamepads;
+// no DB entry needed — standard Xbox button order auto-maps). This is the
+// Linux equivalent of "Block SteamInput Xbox Controller grab": per-process
+// device hiding does not exist here, so we wear Steam's own output identity.
+// The guide button (BTN_MODE) is never emitted either — Steam opens Big
+// Picture / the overlay on it.
+//
+// Override the ids with KEEBS_GAMEPAD_VID / KEEBS_GAMEPAD_PID (hex, no 0x)
+// if a setup ever needs a neutral identity (e.g. 045e:028e genuine Xbox 360
+// ids, which Steam WILL grab).
+// ---------------------------------------------------------------------------
+
+pub struct Gamepad {
+    dev: Mutex<RawUinput>,
+}
+
+impl Gamepad {
+    pub fn new() -> io::Result<Self> {
+        let parse_hex = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .and_then(|s| u16::from_str_radix(s.trim(), 16).ok())
+        };
+        let vendor = parse_hex("KEEBS_GAMEPAD_VID").unwrap_or(0x28DE);
+        let product = parse_hex("KEEBS_GAMEPAD_PID").unwrap_or(0x11FF);
+        let dev = RawUinput::create(
+            "Steam Virtual Gamepad",
+            gp::ALL_BUTTONS,
+            &[],
+            gp::ALL_AXES,
+            (vendor, product, BUS_USB),
+        )?;
+        println!(
+            "uinput: virtual gamepad online as {vendor:04x}:{product:04x} 'Steam Virtual Gamepad'"
+        );
+        // Compositors/games take a moment to notice the new device.
+        thread::sleep(Duration::from_millis(100));
+        Ok(Self {
+            dev: Mutex::new(dev),
+        })
+    }
+
+    /// Set one button (code from [`gp`]); pair with [`Gamepad::sync`].
+    pub fn button(&self, code: u16, pressed: bool) {
+        let dev = self.dev.lock().unwrap();
+        if let Err(e) = dev.emit(EV_KEY, code, if pressed { 1 } else { 0 }) {
+            eprintln!("uinput: gamepad button {code:#x} failed: {e}");
+        }
+    }
+
+    /// Set one axis (code from [`gp`]); pair with [`Gamepad::sync`].
+    pub fn axis(&self, code: u16, value: i32) {
+        let dev = self.dev.lock().unwrap();
+        if let Err(e) = dev.emit(EV_ABS, code, value) {
+            eprintln!("uinput: gamepad axis {code:#x} failed: {e}");
+        }
+    }
+
+    /// Flush the batch started by `button`/`axis` calls.
+    pub fn sync(&self) {
+        let dev = self.dev.lock().unwrap();
+        let _ = dev.syn();
+    }
+
+    /// Everything released / centered (mode switches, teardown).
+    pub fn neutral(&self) {
+        {
+            let dev = self.dev.lock().unwrap();
+            for b in gp::ALL_BUTTONS {
+                let _ = dev.emit(EV_KEY, *b, 0);
+            }
+            for (a, _, _) in gp::ALL_AXES {
+                let _ = dev.emit(EV_ABS, *a, 0);
+            }
+            let _ = dev.syn();
+        }
+    }
+}
+
+impl Drop for Gamepad {
+    fn drop(&mut self) {
+        self.neutral();
     }
 }

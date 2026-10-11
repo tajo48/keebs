@@ -28,6 +28,22 @@ const SHADOW_LABEL: (u8, u8, u8) = (0x73, 0x79, 0x94); // overlay0
 
 const BASE_HEIGHT: f32 = 369.0;
 
+/// OSK transparency (KEEBS_OSK_ALPHA, 0.10..=1.0, default 0.5): the alpha
+/// applied to background + key fills. Text/labels stay opaque for
+/// readability. Native on Wayland: the window is created with
+/// SDL_WINDOW_TRANSPARENT (ARGB buffer) and the compositor blends it.
+fn osk_alpha() -> u8 {
+    static G: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *G.get_or_init(|| {
+        let a = std::env::var("KEEBS_OSK_ALPHA")
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .filter(|v| (0.10..=1.0).contains(v))
+            .unwrap_or(0.5);
+        (a * 255.0) as u8
+    })
+}
+
 pub struct Screen {
     pub window: sdl3::SdlWindow,
     pub renderer: sdl3::SdlRenderer,
@@ -37,6 +53,8 @@ pub struct Screen {
     font_symbol: sdl3::TtfFont,
     font_symbol_small: sdl3::TtfFont,
     font_scale: f32,
+    /// Fill alpha for bg + keys (text stays opaque).
+    alpha: u8,
     /// Texture cache: (font_size, symbol, color, label) -> (tex, w, h).
     tex_cache: HashMap<(i32, bool, (u8, u8, u8), String), (sdl3::SdlTexture, i32, i32)>,
 }
@@ -116,83 +134,46 @@ impl Screen {
             let hint = CString::new("SDL_WINDOW_ACTIVATE_WHEN_SHOWN").unwrap();
             (s.set_hint)(hint.as_ptr(), b"0\0".as_ptr() as *const _);
 
-            // Anchor to the bottom-center of the primary display's usable
-            // area (above the taskbar).
-            let disp = (s.get_primary_display)();
-            let mut bounds = sdl3::SDL_Rect::default();
-            let (mut win_x, mut win_y) =
-                (sdl3::SDL_WINDOWPOS_CENTERED, sdl3::SDL_WINDOWPOS_CENTERED);
             let w = state.abs_dims().0 as i32;
             let h = state.abs_dims().1 as i32;
-            if disp != 0 && (s.get_display_usable_bounds)(disp, &mut bounds) {
-                win_x = bounds.x + ((bounds.w - w) / 2).max(0);
-                win_y = bounds.y + (bounds.h - h).max(0);
-            }
 
-            // Exactly the Python flags: BORDERLESS | HIDDEN | TRANSPARENT,
-            // plus SDL3's real SDL_WINDOW_ALWAYS_ON_TOP (0x10000 — the sdl3w
-            // value 0x100 is MOUSE_GRABBED and must never be passed). No
-            // UTILITY/NOT_FOCUSABLE — on real SDL3 those values collide with
-            // TOOLTIP/POPUP_MENU, which demand a parent window. The no-focus
-            // behavior comes from runtime calls (activate-when-shown hint,
-            // X11 WM hints; override-redirect under XWayland bridges), like
-            // adusk.py.
+            // Pure Wayland: the compositor owns placement, stacking and
+            // focus policy — position/topmost requests are not ours to make.
+            // Flags: BORDERLESS | HIDDEN | TRANSPARENT (ARGB buffer so the
+            // fill alpha shows through). No ALWAYS_ON_TOP: Wayland has no
+            // keep-above for regular toplevels (see README).
             let title = CString::new("").unwrap();
-            let base_flags = sdl3::SDL_WINDOW_BORDERLESS
-                | sdl3::SDL_WINDOW_HIDDEN
-                | sdl3::SDL_WINDOW_ALWAYS_ON_TOP;
+            let base_flags = sdl3::SDL_WINDOW_BORDERLESS | sdl3::SDL_WINDOW_HIDDEN;
             let window = (s.create_window)(
                 title.as_ptr(),
                 w,
                 h,
                 base_flags | sdl3::SDL_WINDOW_TRANSPARENT,
             );
-            let window = if !window.is_null() {
-                window
+            let (window, transparent) = if !window.is_null() {
+                (window, true)
             } else {
-                (s.create_window)(title.as_ptr(), w, h, base_flags)
+                ((s.create_window)(title.as_ptr(), w, h, base_flags), false)
             };
             assert!(
                 !window.is_null(),
                 "SDL_CreateWindow failed: {}",
                 s.get_error_string()
             );
-            (s.set_window_position)(window, win_x, win_y);
-            // X11/XWayland: never take keyboard focus (WM_HINTS.input=False),
-            // so clicks/typing keep landing in the app behind the OSK.
-            let x11 = sdl3::window_is_x11(window);
             println!(
-                "osk: window backend: {}{}",
-                if x11 {
-                    "x11/xwayland"
+                "osk: window {}",
+                if transparent {
+                    "transparent (ARGB)"
                 } else {
-                    "wayland (native — topmost/no-focus unavailable!)"
-                },
-                if x11 {
-                    ""
-                } else {
-                    " — set SDL_VIDEODRIVER=x11"
-                },
-            );
-            if x11 {
-                sdl3::make_window_no_focus(window);
-                // Under a Wayland session the X11 driver means an XWayland
-                // bridge (xwayland-satellite on niri & co.), which IGNORES
-                // WM_HINTS.input — the OSK toplevel steals compositor focus
-                // on map/click and the injected keystrokes land in the OSK
-                // itself. Override-redirect makes it an unmanaged popup
-                // (dmenu-style) no compositor can focus. Real X11 keeps the
-                // hint path — WMs honor it there. KEEBS_NO_OVERRIDE_REDIRECT=1
-                // opts out if a bridge refuses to display OR windows.
-                let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-                let opt_out = std::env::var_os("KEEBS_NO_OVERRIDE_REDIRECT").is_some();
-                if on_wayland && !opt_out {
-                    if sdl3::make_window_override_redirect(window) {
-                        println!("osk: override-redirect ON (xwayland bridge can't focus it)");
-                    } else {
-                        eprintln!("osk: override-redirect FAILED (libX11 missing?)");
-                    }
+                    "OPAQUE — ARGB visual unavailable, alpha will not show"
                 }
+            );
+            // Never give the OSK keyboard focus: injected uinput keys must
+            // keep landing in the app behind it. Pointer input still works.
+            if !(s.set_window_focusable)(window, false) {
+                eprintln!(
+                    "osk: SDL_SetWindowFocusable(false) failed — the compositor may focus the OSK"
+                );
             }
 
             let renderer = (s.create_renderer)(window, std::ptr::null());
@@ -201,6 +182,15 @@ impl Screen {
                 "SDL_CreateRenderer failed: {}",
                 s.get_error_string()
             );
+            let rname_ptr = (s.get_renderer_name)(renderer);
+            let rname = if rname_ptr.is_null() {
+                "?".to_string()
+            } else {
+                std::ffi::CStr::from_ptr(rname_ptr)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            println!("osk: renderer: {rname}");
             (s.set_render_draw_blend_mode)(renderer, sdl3::SDL_BLENDMODE_BLEND);
 
             let (font_path, sym_path) = resolve_fonts();
@@ -233,6 +223,7 @@ impl Screen {
                 font_symbol,
                 font_symbol_small,
                 font_scale,
+                alpha: osk_alpha(),
                 tex_cache: HashMap::new(),
             }
         }
@@ -242,14 +233,8 @@ impl Screen {
         unsafe {
             let s = sdl();
             (s.show_window)(self.window);
-            // Flip topmost AFTER mapping: WMs can ignore state changes on
-            // unmapped windows, so setting it before show only sticks on the
-            // next re-assert tick (the "reopen buried" bug).
-            (s.set_window_always_on_top)(self.window, true);
-            // Direct restack so it's on top the instant it maps, and re-apply
-            // the no-focus hints in case the WM reset them at map time.
-            sdl3::raise_window(self.window);
-            sdl3::make_window_no_focus(self.window);
+            // Re-assert: compositors can reset toplevel state at map time.
+            (s.set_window_focusable)(self.window, false);
         }
     }
 
@@ -322,7 +307,7 @@ impl Screen {
     fn fill(&self, rect: SDL_FRect, color: (u8, u8, u8)) {
         unsafe {
             let s = sdl();
-            (s.set_render_draw_color)(self.renderer, color.0, color.1, color.2, 255);
+            (s.set_render_draw_color)(self.renderer, color.0, color.1, color.2, self.alpha);
             (s.render_fill_rect)(self.renderer, &rect);
         }
     }
@@ -331,7 +316,7 @@ impl Screen {
     pub fn render(&mut self, state: &OskState, vkb: &VirtualKeyboard) {
         let s = sdl();
         unsafe {
-            (s.set_render_draw_color)(self.renderer, BG.0, BG.1, BG.2, 255);
+            (s.set_render_draw_color)(self.renderer, BG.0, BG.1, BG.2, self.alpha);
             (s.render_clear)(self.renderer);
         }
 
@@ -401,7 +386,7 @@ impl Screen {
                         KEY_BEVEL.0,
                         KEY_BEVEL.1,
                         KEY_BEVEL.2,
-                        255,
+                        self.alpha,
                     );
                     (s.render_line)(
                         self.renderer,
@@ -566,18 +551,6 @@ impl Screen {
         let dst = SDL_FRect { x, y, w: tw, h: th };
         unsafe {
             (sdl().render_texture)(self.renderer, tex.0, std::ptr::null(), &dst);
-        }
-    }
-
-    /// Re-assert the always-on-top hint AND directly restack; compositors/WMs
-    /// drop topmost when other windows raise (or ignore the state after
-    /// repeated hide/show cycles), so the main loop calls this periodically
-    /// (same reason adusk.py has `_reassert_topmost`).
-    pub fn assert_topmost(&self) {
-        unsafe {
-            let s = sdl();
-            (s.set_window_always_on_top)(self.window, true);
-            sdl3::raise_window(self.window);
         }
     }
 

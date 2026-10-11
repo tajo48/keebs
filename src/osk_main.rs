@@ -1,6 +1,6 @@
-//! OSK application loop — Rust port of `adusk.main` (lean v1: no X11/Win32
-//! no-activate calls, no open animation, no click-through or live skin
-//! reload; those ride on the tray/settings phases).
+//! OSK application loop — Rust port of `adusk.main` (lean v1: no open
+//! animation, no click-through or live skin reload; those ride on the
+//! tray/settings phases).
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -18,40 +18,47 @@ const ACTIVE_FPS: f32 = 120.0;
 const VISIBLE_IDLE_FPS: f32 = 60.0;
 const HIDDEN_FPS: f32 = 15.0;
 const IDLE_GRACE: f32 = 0.4;
-/// Topmost re-assert + caps refresh cadence. The caps query is an X11
-/// round-trip, so it lives here — never per frame.
+/// Caps refresh cadence (sysfs LED read — cheap, but never per frame).
 const SLOW_TICK_MS: u64 = 250;
 
 pub fn run(stop: Arc<StopFlag>) {
-    // Force X11/XWayland like the Python app's effective environment:
-    // SDL_SetWindowAlwaysOnTop and the X11 no-focus WM hints only work there
-    // (on native Wayland both are no-ops — confirmed by our own backend log).
-    // A real env var, not an SDL hint: the hint didn't stick in practice.
-    // Respected only when the user hasn't chosen a driver explicitly.
-    if std::env::var_os("SDL_VIDEODRIVER").is_none() {
-        // SAFETY: single-threaded here — no other thread has been spawned.
-        unsafe {
-            std::env::set_var("SDL_VIDEODRIVER", "x11");
-        }
-    }
+    // Pure Wayland: no driver forcing, no X11 hints. Whatever SDL3 picks
+    // natively (wayland by default under WAYLAND_DISPLAY) is what we run on;
+    // placement/stacking/focus policy belong to the compositor.
 
     let s = sdl();
+    // Stable Wayland identity BEFORE anything SDL touches the app id: the
+    // xdg_toplevel app_id becomes "keebs.osk", so compositor window rules
+    // (niri & co.) can match the OSK reliably instead of guessing the
+    // process-name-derived default.
+    unsafe {
+        let name = std::ffi::CString::new("keebs OSK").unwrap();
+        let version = std::ffi::CString::new("1.0").unwrap();
+        let id = std::ffi::CString::new("keebs.osk").unwrap();
+        let _ = (s.set_app_metadata)(name.as_ptr(), version.as_ptr(), id.as_ptr());
+    }
     let state = Arc::new(OskState::new());
-    let (w, h) = (1286.0_f32, 369.0_f32);
+    // Window scale (KEEBS_OSK_SCALE, 0.5..=1.5, default 0.8 = "smaller");
+    // fonts and layout scale with the window (render.rs font_scale).
+    let scale = std::env::var("KEEBS_OSK_SCALE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| (0.5..=1.5).contains(v))
+        .unwrap_or(0.8);
+    let (w, h) = (1286.0_f32 * scale, 369.0_f32 * scale);
+    println!("osk: window {w:.0}x{h:.0} (scale {scale}, alpha via KEEBS_OSK_ALPHA)");
     state.width.store(w as usize, Ordering::SeqCst);
     state.height.store(h as usize, Ordering::SeqCst);
 
     unsafe {
-        let hint = cstring_hint();
-        let _ = (s.set_hint)(hint.as_ptr(), b"1\0".as_ptr() as *const _);
         if !(s.init)(sdl3::SDL_INIT_VIDEO | sdl3::SDL_INIT_EVENTS) {
             eprintln!("osk: SDL_Init failed: {}", s.get_error_string());
             return;
         }
     }
 
-    // Gamepad subsystem no longer needed — Deck haptics are firmware-native
-    // (lizard stays enabled, lizardguard swallows the output).
+    // Gamepad mode is a uinput virtual Xbox pad (see uinput::Gamepad) — no
+    // SDL gamepad subsystem is needed.
 
     // Controller input thread (owns the device, lizard OFF).
     {
@@ -77,18 +84,12 @@ pub fn run(stop: Arc<StopFlag>) {
         let st = Arc::clone(&state);
         kb.set_caps_hook(Box::new(move || st.refresh_caps()));
     }
-    // Niri diagnostics (no-ops outside niri): log where focus sits around
-    // OSK open/close, and keep it off the OSK window via the focus guard.
-    crate::niri_diag::log_focus("startup");
 
     let mut was_visible = false;
     let mut current_fps = ACTIVE_FPS;
     let mut last_active = Instant::now();
     let mut limiter = FrameLimiter::new(ACTIVE_FPS);
     let mut next_slow_tick = Instant::now();
-    // Niri focus guard, armed only while the OSK is visible (None = hidden or
-    // not running under niri).
-    let mut focus_guard: Option<crate::niri_diag::FocusGuard> = None;
     // The first motion event after open just records the anchor (see adusk.py).
     let mut mouse_anchor: Option<(i32, i32)> = None;
     let mut mouse_repeat_at: Option<Instant> = None;
@@ -168,15 +169,6 @@ pub fn run(stop: Arc<StopFlag>) {
                 screen.show();
                 mouse_anchor = None; // re-prime: opening fires a spurious motion
                 state.refresh_caps();
-                crate::niri_diag::log_focus("osk-open");
-                crate::niri_diag::log_windows_digest();
-                focus_guard = Some(crate::niri_diag::FocusGuard::start());
-                // Focus changes can land a few event-loop iterations after
-                // the map — probe again once, slightly delayed.
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    crate::niri_diag::log_focus("osk-open+400ms");
-                });
             } else {
                 Dispatcher {
                     kb: &kb,
@@ -185,18 +177,14 @@ pub fn run(stop: Arc<StopFlag>) {
                 .release_shift();
                 screen.hide();
                 mouse_repeat_at = None;
-                drop(focus_guard.take());
-                crate::niri_diag::log_focus("osk-close");
             }
             was_visible = cur_visible;
             activity = true;
         }
 
         if cur_visible {
-            // Topmost re-assert + caps refresh on a slow tick. Compositors
-            // drop topmost when other windows raise — re-assert.
+            // Caps refresh on a slow tick (sysfs read — never per frame).
             if Instant::now() >= next_slow_tick {
-                screen.assert_topmost();
                 state.refresh_caps();
                 next_slow_tick = Instant::now() + Duration::from_millis(SLOW_TICK_MS);
             }
@@ -221,9 +209,6 @@ pub fn run(stop: Arc<StopFlag>) {
                     }
                     let kd = &vkb.keys[r][c];
                     diag::log(&format!("osk: dispatch pad-click '{}' ({r},{c})", kd.label));
-                    // Niri: if the OSK toplevel stole focus, give it back
-                    // BEFORE injecting — otherwise the key lands in the OSK.
-                    crate::niri_diag::ensure_focus_not_ours();
                     Dispatcher {
                         kb: &kb,
                         state: &state,
@@ -258,9 +243,6 @@ pub fn run(stop: Arc<StopFlag>) {
                     }
                     let kd = &vkb.keys[r][c];
                     diag::log(&format!("osk: dispatch key '{}' ({r},{c})", kd.label));
-                    // Niri focus restore before injection (mouse clicks on the
-                    // OSK focus it — niri has click-to-focus).
-                    crate::niri_diag::ensure_focus_not_ours();
                     Dispatcher {
                         kb: &kb,
                         state: &state,
@@ -310,8 +292,4 @@ pub fn run(stop: Arc<StopFlag>) {
     state.close_app.store(true, Ordering::SeqCst);
     stop.signal(); // release the controller thread
     println!("osk: bye");
-}
-
-fn cstring_hint() -> std::ffi::CString {
-    std::ffi::CString::new("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS").unwrap()
 }
