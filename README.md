@@ -163,6 +163,13 @@ Windows tree.
       }
   }
   ```
+- **Focus on GNOME** (compositor-side, not code): GNOME/mutter focuses
+  every native Wayland toplevel on map and offers no client-side opt-out
+  (the `SDL_SetWindowFocusable(false)` flag has no Wayland protocol to
+  express it), so the companion GNOME Shell extension `keebs-focus@keebs`
+  (shipped by the Flake module) watches for the `keebs.osk` window and
+  re-focuses whatever was focused before it. niri needs no extension — its
+  `open-focused false` window rule already keeps the OSK unfocused.
 - **Lizard persistence trap (Triton)**: runtime lizard writes can stick in
   firmware; only a power-cycle restores defaults. The driver never touches
   lizard at runtime on Linux — the watchdog thread exists purely for
