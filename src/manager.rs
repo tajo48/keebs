@@ -19,7 +19,7 @@ use crate::events::EventMapper;
 use crate::osk_state::{Dir, InputState, OskState, Pointer};
 use crate::sc::{SCI_NULL, SciInput, buttons as btn};
 use crate::triton::SteamController;
-use crate::uinput::{Gamepad, Keyboard, Mouse, gp, keys as K};
+use crate::uinput::{Keyboard, Mouse, keys as K};
 use crate::vkb;
 
 // Stick thresholds / cadences (controller.py class constants).
@@ -39,38 +39,6 @@ const MOUSE_EXPONENT: f32 = 5.0;
 const MOUSE_MIN: f32 = 0.05;
 /// L2/R2 analog actuation point (0..32767) for the OSK Shift/Enter roles.
 const TRIGGER_THRESHOLD: i32 = 16384;
-
-/// Classic-SC pad absolute coords fill the i16 range — scale to stick range.
-const PAD_AXIS_SPAN: f32 = 32767.0;
-
-/// Virtual-pad button map: SciInput mask -> uinput code (order = diff bit).
-const GP_BTN_MAP: &[(u32, u16)] = &[
-    (btn::A, gp::BTN_SOUTH),
-    (btn::B, gp::BTN_EAST),
-    (btn::X, gp::BTN_WEST),
-    (btn::Y, gp::BTN_NORTH),
-    (btn::LB, gp::BTN_TL),
-    (btn::RB, gp::BTN_TR),
-    (btn::VIEW, gp::BTN_SELECT),
-    (btn::START, gp::BTN_START),
-    (btn::L3, gp::BTN_THUMBL),
-    (btn::R3, gp::BTN_THUMBR),
-    (btn::DPAD_UP, gp::BTN_DPAD_UP),
-    (btn::DPAD_DOWN, gp::BTN_DPAD_DOWN),
-    (btn::DPAD_LEFT, gp::BTN_DPAD_LEFT),
-    (btn::DPAD_RIGHT, gp::BTN_DPAD_RIGHT),
-];
-/// Extra virtual bits beyond GP_BTN_MAP: digital trigger views.
-const GP_BIT_TL2: u32 = 14;
-const GP_BIT_TR2: u32 = 15;
-const GP_AXES: [u16; 6] = [
-    gp::ABS_X,
-    gp::ABS_Y,
-    gp::ABS_Z,
-    gp::ABS_RX,
-    gp::ABS_RY,
-    gp::ABS_RZ,
-];
 
 /// Which physical device is feeding frames — for haptics + lizard control.
 #[derive(Clone)]
@@ -157,10 +125,6 @@ pub struct ControllerManager {
     mouse: Mouse,
     evm: EventMapper,
 
-    // Steam+X / Steam-alone chord tracking. Seeded TRUE: the OSK was just
-    // opened by a Steam(+X) chord that may still be held on the first frame.
-    steam_was_pressed: bool,
-    saw_x_during_steam: bool,
     open_t: Instant,
 
     // Rising-edge latches.
@@ -192,14 +156,7 @@ pub struct ControllerManager {
     /// X11-only feature — Wayland compositors own window placement, so it is
     /// deliberately not implemented.)
     r5_was_pressed: bool,
-    /// Virtual Xbox pad (gamepad mode). None = /dev/uinput unavailable.
-    gamepad: Option<Gamepad>,
-    /// Gamepad mode: Steam-tap posture where the controller IS an Xbox pad
-    /// and all OSK logic (chords, injection, pointers) is disabled.
-    gamepad_mode: bool,
-    gp_prev_buttons: u32,
-    gp_prev_axes: [i32; 6],
-    /// Raw X edge tracker (Steam+X opens the OSK even from gamepad mode).
+    /// Raw X edge tracker for the Steam+X chord (opens the OSK from anywhere).
     x_raw_was_pressed: bool,
     mouse_l_active: bool,
     mouse_r_active: bool,
@@ -215,19 +172,10 @@ impl ControllerManager {
         // Face buttons whose action is unconditional ride EventMapper;
         // everything conditional/latching is handled in handle_input.
         evm.set_button_action(btn::Y, "KEY_SPACE");
-        let gamepad = match Gamepad::new() {
-            Ok(g) => Some(g),
-            Err(e) => {
-                eprintln!("uinput: gamepad init failed ({e}); gamepad mode unavailable");
-                None
-            }
-        };
         Ok(Self {
             kb: Keyboard::new()?,
             mouse: Mouse::new()?,
             evm,
-            steam_was_pressed: true,
-            saw_x_during_steam: true,
             open_t: Instant::now(),
             l3_was_pressed: false,
             b_was_pressed: false,
@@ -253,10 +201,6 @@ impl ControllerManager {
             altgr_held: false,
             shift_held: false,
             r5_was_pressed: false,
-            gamepad,
-            gamepad_mode: false,
-            gp_prev_buttons: 0,
-            gp_prev_axes: [0; 6],
             x_raw_was_pressed: false,
             mouse_l_active: false,
             mouse_r_active: false,
@@ -269,8 +213,7 @@ impl ControllerManager {
 
     pub fn release_held(&mut self, state: &OskState) {
         // Make sure no injected modifier/key ever stays stuck on the OS
-        // (sticky OSK modifiers + back-paddle holds) and the virtual pad is
-        // never left with a held button or deflected axis.
+        // (sticky OSK modifiers + back-paddle holds).
         self.kb.release_code(K::KEY_LEFTSHIFT);
         self.kb.release_code(K::KEY_RIGHTSHIFT);
         self.kb.release_code(K::KEY_ENTER);
@@ -278,11 +221,6 @@ impl ControllerManager {
         self.kb.release_code(K::KEY_LEFTCTRL);
         self.kb.release_code(K::KEY_RIGHTALT);
         self.kb.release_code(K::KEY_LEFTMETA);
-        if let Some(g) = self.gamepad.as_ref() {
-            g.neutral();
-        }
-        self.gp_prev_buttons = 0;
-        self.gp_prev_axes = [0; 6];
         self.ctrl_held = false;
         self.altgr_held = false;
         self.shift_held = false;
@@ -302,15 +240,9 @@ impl ControllerManager {
     }
 
     /// Re-seed every edge latch for a switch of the active device (see
-    /// `input_thread`). `steam_was_pressed` seeds FALSE on purpose: a Steam
-    /// tap now toggles gamepad mode, and the activation itself is usually
-    /// triggered by that same Steam press — seeding true would swallow the
-    /// toggle. Gamepad mode itself deliberately SURVIVES a device switch
-    /// (it is a global posture, not a per-controller one).
+    /// `input_thread`).
     pub fn reset_for_device_switch(&mut self, state: &OskState) {
         self.release_held(state);
-        self.steam_was_pressed = false;
-        self.saw_x_during_steam = false;
         self.open_t = Instant::now();
         self.l3_was_pressed = false;
         self.b_was_pressed = false;
@@ -350,11 +282,7 @@ impl ControllerManager {
     }
 
     pub fn handle_input(&mut self, state: &OskState, dev: &Device, b: &SciInput) {
-        // Gamepad mode: the controller IS the virtual Xbox pad — no OSK
-        // chords, no EventMapper injection, no key/mouse output of any kind.
-        if !self.gamepad_mode {
-            self.evm.process(b);
-        }
+        self.evm.process(b);
 
         if self.open_tick_pending {
             self.open_tick_pending = false;
@@ -366,18 +294,16 @@ impl ControllerManager {
         // "Steam" gates the chords (QAM acts like Steam too).
         let steam_now = b.buttons & (btn::STEAM | btn::QAM) != 0;
 
-        // Steam semantics run in BOTH modes (see handle_steam_button):
-        // Steam+X opens the OSK, a bare Steam tap toggles gamepad mode.
-        self.handle_steam_button(state, dev, b, steam_now);
+        // Steam+X opens the OSK from anywhere (see handle_steam_button).
+        self.handle_steam_button(state, b, steam_now);
 
         // Lizard policy (the "cursor goes back when the keyboard closes"
         // behavior): the OSK owns the controller while visible -> firmware
         // kb/mouse OFF; OSK hidden -> desktop mode, pads drive the system
         // mouse (ON); Steam held -> OFF regardless so chords don't fight
-        // firmware output; gamepad mode -> OFF (the virtual pad must be the
-        // only output a game sees). Re-asserted on change or every ~2 s (the
+        // firmware output. Re-asserted on change or every ~2 s (the
         // firmware's own timer re-enables on its own schedule).
-        let desired_lizard_on = !state.is_visible() && !steam_now && !self.gamepad_mode;
+        let desired_lizard_on = !state.is_visible() && !steam_now;
         if self.lizard_asserted_on != Some(desired_lizard_on) {
             println!(
                 "osk: lizard -> {}",
@@ -394,15 +320,6 @@ impl ControllerManager {
             dev.set_lizard(desired_lizard_on);
             self.lizard_asserted_on = Some(desired_lizard_on);
             self.last_lizard_assert = now;
-        }
-
-        // Gamepad mode: feed the virtual pad, keep the shared flags quiet,
-        // and stop — everything below is OSK logic.
-        if self.gamepad_mode {
-            self.feed_gamepad(dev, b);
-            state.set_pad_touched(false, false);
-            self.sc_input_previous = *b;
-            return;
         }
 
         // Right stick -> system mouse cursor (visible OSK only).
@@ -432,7 +349,6 @@ impl ControllerManager {
         if l3_pressed && !self.l3_was_pressed {
             if steam_now {
                 self.kb.tap_code(K::KEY_PLAYPAUSE);
-                self.saw_x_during_steam = true;
             } else {
                 self.kb.tap_code(K::KEY_CAPSLOCK);
                 // Caps state is read live from the X server modifier mask —
@@ -598,7 +514,6 @@ impl ControllerManager {
                 self.alt_held_for_tab = true;
             }
             self.kb.tap_code(K::KEY_TAB);
-            self.saw_x_during_steam = true;
         }
         self.view_was_pressed = view_now;
         if !steam_now && self.alt_held_for_tab {
@@ -673,149 +588,17 @@ impl ControllerManager {
         self.sc_input_previous = *b;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// Steam button semantics, shared by both modes: Steam+X opens the OSK
-    /// (leaving gamepad mode), any chord use (media / alt-tab / OSK) marks the
-    /// hold as consumed, and a bare tap — Steam released with nothing else
-    /// done — toggles gamepad mode on/off.
-    fn handle_steam_button(
-        &mut self,
-        state: &OskState,
-        dev: &Device,
-        b: &SciInput,
-        steam_now: bool,
-    ) {
+    /// Steam+X opens the OSK from anywhere. X is also a typing key
+    /// (Backspace), so the open rides a dedicated RAW edge tracker.
+    fn handle_steam_button(&mut self, state: &OskState, b: &SciInput, steam_now: bool) {
         let x_raw = b.buttons & btn::X != 0;
 
-        if steam_now && !self.steam_was_pressed {
-            // Rising edge: re-arm the "chord was used during this hold" marker.
-            self.saw_x_during_steam = false;
-        }
-
-        // Steam+X: open the OSK (and leave gamepad mode if it was on).
         if steam_now && x_raw && !self.x_raw_was_pressed {
-            self.saw_x_during_steam = true;
-            if self.gamepad_mode {
-                self.set_gamepad_mode(state, dev, false);
-            }
             state.show();
             self.open_tick_pending = true;
         }
 
-        // Falling edge, no chord used: bare tap -> toggle gamepad mode.
-        if !steam_now && self.steam_was_pressed && !self.saw_x_during_steam {
-            self.set_gamepad_mode(state, dev, !self.gamepad_mode);
-        }
-
         self.x_raw_was_pressed = x_raw;
-        self.steam_was_pressed = steam_now;
-    }
-
-    /// Switch gamepad mode. ON: keyboard off (OSK hides, pointers/highlights
-    /// reset, held keys released) and the controller feeds the virtual Xbox
-    /// pad exclusively. OFF: back to desktop/OSK posture. Haptic tick either
-    /// way so the switch is felt.
-    fn set_gamepad_mode(&mut self, state: &OskState, dev: &Device, on: bool) {
-        if on && self.gamepad.is_none() {
-            diag::log("osk: gamepad mode unavailable (/dev/uinput init failed)");
-            return;
-        }
-        self.gamepad_mode = on;
-        // Releases stuck keys/buttons and neutrals the virtual pad.
-        self.release_held(state);
-        if on {
-            state.close();
-            state.set_pointers(Pointer::INACTIVE, Pointer::INACTIVE);
-            state.set_pad_touched(false, false);
-            state.set_highlighted(Default::default());
-            self.mouse_last_t = None;
-            diag::log("osk: gamepad mode ON — controller is a virtual xbox pad");
-        } else {
-            diag::log("osk: gamepad mode OFF");
-        }
-        dev.haptic_tick();
-    }
-
-    /// Translate one SciInput frame into the virtual Xbox pad. Diff-emitted:
-    /// only changed buttons/axes are written to uinput. The classic (2015)
-    /// has no sticks — its pads ARE the sticks there.
-    fn feed_gamepad(&mut self, dev: &Device, b: &SciInput) {
-        let Some(gpad) = self.gamepad.as_ref() else {
-            return;
-        };
-
-        let mut cur: u32 = 0;
-        for (i, (mask, _)) in GP_BTN_MAP.iter().enumerate() {
-            if b.buttons & mask != 0 {
-                cur |= 1 << i;
-            }
-        }
-        if self.trigger_pressed(b, btn::LT, b.ltrig as i32) {
-            cur |= 1 << GP_BIT_TL2;
-        }
-        if self.trigger_pressed(b, btn::RT, b.rtrig as i32) {
-            cur |= 1 << GP_BIT_TR2;
-        }
-
-        let changed = cur ^ self.gp_prev_buttons;
-        if changed != 0 {
-            for (i, (_, code)) in GP_BTN_MAP.iter().enumerate() {
-                if changed & (1 << i) != 0 {
-                    gpad.button(*code, cur & (1 << i) != 0);
-                }
-            }
-            if changed & (1 << GP_BIT_TL2) != 0 {
-                gpad.button(gp::BTN_TL2, cur & (1 << GP_BIT_TL2) != 0);
-            }
-            if changed & (1 << GP_BIT_TR2) != 0 {
-                gpad.button(gp::BTN_TR2, cur & (1 << GP_BIT_TR2) != 0);
-            }
-            gpad.sync();
-            self.gp_prev_buttons = cur;
-        }
-
-        // Kernel stick convention: Y grows downward; SC sticks/pads report
-        // Y up-positive — hence the negation.
-        let clamp_stick = |v: i16| (v as i32).clamp(-32768, 32767);
-        let pad_axis = |v: i16, touched: bool| {
-            if !touched {
-                return 0;
-            }
-            ((v as f32 / PAD_AXIS_SPAN) * 32767.0) as i32
-        };
-        let (lx, ly, rx, ry) = match dev {
-            Device::Classic(_) => (
-                pad_axis(b.lpad_x, b.buttons & btn::LPADTOUCH != 0),
-                -pad_axis(b.lpad_y, b.buttons & btn::LPADTOUCH != 0),
-                pad_axis(b.rpad_x, b.buttons & btn::RPADTOUCH != 0),
-                -pad_axis(b.rpad_y, b.buttons & btn::RPADTOUCH != 0),
-            ),
-            _ => (
-                clamp_stick(b.lstick_x),
-                -clamp_stick(b.lstick_y),
-                clamp_stick(b.rstick_x),
-                -clamp_stick(b.rstick_y),
-            ),
-        };
-        let axes = [
-            lx,
-            ly,
-            b.ltrig.clamp(0, 32767) as i32,
-            rx,
-            ry,
-            b.rtrig.clamp(0, 32767) as i32,
-        ];
-        let mut axes_changed = false;
-        for (i, v) in axes.iter().enumerate() {
-            if *v != self.gp_prev_axes[i] {
-                gpad.axis(GP_AXES[i], *v);
-                axes_changed = true;
-            }
-        }
-        if axes_changed {
-            gpad.sync();
-            self.gp_prev_axes = axes;
-        }
     }
 
     fn handle_pad_input(
@@ -918,7 +701,6 @@ impl ControllerManager {
 
         if let Some(key) = fire.then_some(key).flatten() {
             self.kb.tap_code(key);
-            self.saw_x_during_steam = true;
             if is_edge && matches!(zone, Zone::Up | Zone::Down) {
                 dev.haptic_tick();
             }
@@ -1151,11 +933,10 @@ fn activate(
         && let Some((_, old)) = registry.iter().find(|(k, _)| *k == a)
     {
         // Demoted device follows the global posture: lizard ON only when the
-        // OSK is hidden AND gamepad mode is off (visible or gaming -> OFF,
-        // same rule the supervision tick enforces for inactive devices — its
-        // firmware mouse must not fight the open keyboard or the game).
-        old.dev
-            .set_lizard(!state.is_visible() && !manager.gamepad_mode);
+        // OSK is hidden (visible -> OFF, same rule the supervision tick
+        // enforces for inactive devices — its firmware mouse must not fight
+        // the open keyboard).
+        old.dev.set_lizard(!state.is_visible());
     }
     manager.reset_for_device_switch(state);
     let dev = new.dev.clone();
@@ -1306,20 +1087,18 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
             // INACTIVE devices' lizard policy: OFF while the OSK is visible
             // (an idle controller's firmware mouse fights the keyboard —
             // "SC moves the mouse while I type on the Deck"), ON when hidden
-            // (desktop posture for everyone), OFF in gamepad mode (the
-            // virtual pad must be the only output a game sees). The manager's
+            // (desktop posture for everyone). The manager's
             // per-frame policy keeps owning the ACTIVE device; this tick owns
             // the rest. Change-gated + 3 s re-assert, ALWAYS on a throwaway
             // thread — an inline feature write stalls the frame pipeline (it
             // waits on the reader's device mutex; the Triton disable even
             // sleeps 50 ms for its double-tap).
             let vis = state.is_visible();
-            let gp_on = manager.gamepad_mode;
             for (k, r) in registry.iter_mut() {
                 if Some(*k) == active {
                     continue;
                 }
-                let want = !vis && !gp_on;
+                let want = !vis;
                 if r.lizard_sent != Some(want)
                     || r.lizard_sent_at.elapsed() > Duration::from_secs(3)
                 {

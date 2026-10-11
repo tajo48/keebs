@@ -94,8 +94,8 @@ pub struct SteamController {
 
 impl SteamController {
     /// `passive=true` keeps firmware kb/mouse (lizard) ON — the desktop-mode /
-    /// chord-watcher posture. `false` (OSK / gamepad mode) sends
-    /// DISABLE_LIZARD at open time.
+    /// chord-watcher posture. `false` (OSK mode) sends DISABLE_LIZARD at open
+    /// time.
     pub fn new(passive: bool, stop: Arc<StopFlag>) -> Result<Self, HidError> {
         Ok(Self {
             api: HidApi::new()?,
@@ -144,8 +144,8 @@ impl SteamController {
             ));
         }
 
-        // Try the last-known-good interface first: a rebuild (gamepad<->lizard
-        // switch on alt-tab) then comes live in milliseconds instead of
+        // Try the last-known-good interface first: a rebuild (lizard switch
+        // on alt-tab) then comes live in milliseconds instead of
         // probing every dongle slot for up to 1.5 s.
         let last_good = LAST_GOOD_PATH.lock().unwrap().clone();
         if let Some(lg) = last_good {

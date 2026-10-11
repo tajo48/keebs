@@ -188,6 +188,23 @@ fn listener(stop: Arc<StopFlag>) {
 }
 
 fn main() {
+    // GNOME autostart hands the app startup-notification / xdg-activation
+    // tokens (DESKTOP_STARTUP_ID / XDG_ACTIVATION_TOKEN). If SDL redeems
+    // one when mapping the window, the compositor focuses the OSK and every
+    // injected key lands in ourselves — the "window is always in focus, must
+    // restart keebs after login" bug. A terminal launch passes no token,
+    // which is why the manually restarted instance behaves. Strip them before
+    // anything SDL sees the environment. (The .desktop Exec in
+    // Flake/modules/programs/keebs.nix strips the same pair for older
+    // binaries that lack this line.)
+    // SAFETY: env mutation is UB if other threads are reading the
+    // environment — this runs at the very top of main(), before any thread
+    // spawn, so nothing else exists yet.
+    unsafe {
+        std::env::remove_var("DESKTOP_STARTUP_ID");
+        std::env::remove_var("XDG_ACTIVATION_TOKEN");
+    }
+
     keebs::diag::start();
     let listener_mode = std::env::args().any(|a| a == "--listener");
     let probe_mode = std::env::args().any(|a| a == "--probe-sc");

@@ -47,8 +47,7 @@ font); it also listens for the mouse in case you want to click-type:
 
 | input | action |
 |-------|--------|
-| **Steam** (tap) | toggle **gamepad mode** on/off |
-| **Steam + X** | open the OSK (also leaves gamepad mode) |
+| **Steam + X** | open the OSK |
 | **B** | close the OSK |
 | **R5** (right lower paddle) | toggle: open when closed, close when open |
 | **left stick / D-pad** | move the key cursor (tap = 1 key, hold = repeat) |
@@ -81,7 +80,6 @@ whenever Enter is sent, so Enter never arrives as Shift/Ctrl/Alt/Win+Enter.
 | `KEEBS_SC_TICK` | `550,-6,5,18` | SC 2026 UI tick (cursor moves): `freq,gain,count,ms` (gain −127..127, higher = louder) |
 | `KEEBS_OSK_SCALE` | `0.8` | OSK window scale (1.0 = original 1286×369; fonts/layout scale with it) |
 | `KEEBS_OSK_ALPHA` | `0.5` | OSK transparency for background + key fills (0.10..1.0; labels stay opaque). Native on Wayland (ARGB window) |
-| `KEEBS_GAMEPAD_VID` / `KEEBS_GAMEPAD_PID` | `28de` / `11ff` | virtual gamepad USB ids (hex, no `0x`) — default is Steam Input's own output identity so Steam doesn't grab it (see below) |
 
 Example: `KEEBS_PAD_GAIN=3 KEEBS_SC_TICK=800,-3,3,12 nix run .#keebs`
 (The Deck's haptics are firmware-native and are never overridden.)
@@ -91,46 +89,6 @@ gets its own reader; the OSK binds to whichever controller you actually
 touch (300 ms hysteresis — a device in use can't be stolen mid-chord), and
 switches automatically when you pick up the other one. Inactive devices
 stay in desktop posture (lizard on).
-
-## Gamepad mode
-
-Tap **Steam** (alone, no game detection): the controller becomes a virtual
-Xbox 360 gamepad via `/dev/uinput` and the keyboard is fully disabled (OSK
-hides, no key/mouse injection, firmware lizard off — the pad is the only
-output a game sees). Tap **Steam** again to leave; **Steam + X** leaves and
-opens the OSK. A haptic tick confirms every switch.
-
-| controller | virtual pad |
-|---|---|
-| A / B / X / Y | A / B / X / Y |
-| LB / RB | LB / RB |
-| LT / RT | analog triggers + digital button view |
-| VIEW / START | Back / Start |
-| L3 / R3 | stick clicks |
-| D-pad | D-pad |
-| left/right stick | left/right stick |
-| pads (classic 2015 only) | left/right stick (the classic has no sticks) |
-
-The guide button is **never** emitted — Steam reacts to it by opening Big
-Picture / the overlay.
-
-### Why Steam leaves it alone
-
-The pad identifies itself as **`28de:11ff` "Steam Virtual Gamepad"** — the
-exact vendor/product/name of Steam Input's *own* uinput outputs. Steam's
-controller manager must skip its own outputs (otherwise it would recursively
-grab them), so running Steam does not turn the pad into a Steam Input
-controller — which is the Linux port of "Block SteamInput Xbox Controller
-grab". Games still see it normally: SDL2/SDL3 explicitly enumerate
-`28de:11ff` devices as gamepads (with the standard Xbox button order
-auto-mapped), and Proton reads the evdev node directly.
-
-If a setup ever needs a neutral identity, override it
-(`KEEBS_GAMEPAD_VID`/`KEEBS_GAMEPAD_PID`, hex) — but note that e.g. the
-genuine Xbox ids `045e:028e` WILL be grabbed by Steam. The env-var route
-(`SDL_GAMECONTROLLER_IGNORE_DEVICES=<vid>:<pid>`) hides a device from a
-whole process tree, so games launched from that Steam would lose it too —
-prefer the default identity.
 
 `--listener` runs the phase-1 passive device listener instead (prints button
 edges + battery, LGRIP1/L4 -> Left Shift). Detects the Steam Deck, the

@@ -72,9 +72,6 @@ pub fn run(stop: Arc<StopFlag>) {
         }
     }
 
-    // Gamepad mode is a uinput virtual Xbox pad (see uinput::Gamepad) — no
-    // SDL gamepad subsystem is needed.
-
     // Controller input thread (owns the device, lizard OFF).
     {
         let st = Arc::clone(&state);
@@ -143,6 +140,13 @@ pub fn run(stop: Arc<StopFlag>) {
                     state.height.store(nh as usize, Ordering::SeqCst);
                     vkb.update_dimensions(nw as f32, nh as f32);
                     activity = true;
+                } else if et == sdl3::SDL_EVENT_WINDOW_FOCUS_GAINED {
+                    // The OSK must NEVER hold keyboard focus (injected uinput
+                    // keys would land in ourselves). If this line shows up in
+                    // the diag log, the compositor/activation side is broken.
+                    diag::log("osk: window FOCUS GAINED (compositor focused the OSK!)");
+                } else if et == sdl3::SDL_EVENT_WINDOW_FOCUS_LOST {
+                    diag::log("osk: window focus lost");
                 } else if et == sdl3::SDL_EVENT_MOUSE_MOTION && state.is_visible() {
                     let mpos = (ev.motion.x as i32, ev.motion.y as i32);
                     if let Some(anchor) = mouse_anchor {
