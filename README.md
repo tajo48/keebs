@@ -197,8 +197,12 @@ Windows tree.
       open-floating true
       open-focused false
       default-floating-position x=0 y=0 relative-to="bottom-center"
-      border { off }
-      shadow { off }
+      border {
+          off
+      }
+      shadow {
+          off
+      }
   }
   ```
 - **Lizard persistence trap (Triton)**: runtime lizard writes can stick in
