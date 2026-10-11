@@ -318,7 +318,7 @@ pub fn default_layout() -> Vec<Vec<KeyDef>> {
             },
             KeyDef {
                 glyph: Some("\u{2328}"), // ⌨
-                ..mod_key("Close", 0, Behavior::Move, 1.4, Align::Center, Top)
+                ..mod_key("", 0, Behavior::Move, 1.4, Align::Center, Top)
             },
         ],
     ]
