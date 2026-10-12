@@ -10,6 +10,7 @@ use std::ffi::CString;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::diag;
 use crate::osk_state::{InputState, OskState};
 use crate::sdl3::{self, SDL_Color, SDL_FRect, sdl};
 use crate::vkb::{Align, KeyDef, KeyLayout, VAlign, VirtualKeyboard};
@@ -163,6 +164,10 @@ impl Screen {
                 if !window.is_null() {
                     break;
                 }
+                diag::log(&format!(
+                    "osk: SDL_CreateWindow failed ({}); retry",
+                    s.get_error_string()
+                ));
                 thread::sleep(Duration::from_millis(500));
             }
             assert!(
@@ -170,14 +175,14 @@ impl Screen {
                 "SDL_CreateWindow failed: {}",
                 s.get_error_string()
             );
-            println!(
+            diag::log(&format!(
                 "osk: window {}",
                 if transparent {
                     "transparent (ARGB)"
                 } else {
                     "OPAQUE — ARGB visual unavailable, alpha will not show"
                 }
-            );
+            ));
             // Never give the OSK keyboard focus: injected uinput keys must
             // keep landing in the app behind it. Pointer input still works.
             if !(s.set_window_focusable)(window, false) {

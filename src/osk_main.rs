@@ -58,6 +58,7 @@ pub fn run(stop: Arc<StopFlag>) {
         let mut tries = 0u32;
         loop {
             if (s.init)(sdl3::SDL_INIT_VIDEO | sdl3::SDL_INIT_EVENTS) {
+                diag::log("osk: SDL_Init ok");
                 break;
             }
             tries += 1;
@@ -106,6 +107,7 @@ pub fn run(stop: Arc<StopFlag>) {
             return;
         }
     };
+    diag::log("osk: uinput keyboard ready");
     // Injected CapsLock flips the glyphs immediately (the X mask may lag one
     // tick; the 250ms refresh below self-heals regardless).
     {

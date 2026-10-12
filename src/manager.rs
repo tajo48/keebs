@@ -987,6 +987,7 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
             return;
         }
     };
+    diag::log("manager: uinput devices ready (input path live)");
 
     /// The active device must be idle this long before another can take over.
     const SWITCH_IDLE: Duration = Duration::from_millis(300);
