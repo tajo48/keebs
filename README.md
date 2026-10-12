@@ -168,8 +168,11 @@ Windows tree.
   (the `SDL_SetWindowFocusable(false)` flag has no Wayland protocol to
   express it), so the companion GNOME Shell extension `keebs-focus@keebs`
   (shipped by the Flake module) watches for the `keebs.osk` window and
-  re-focuses whatever was focused before it. niri needs no extension — its
-  `open-focused false` window rule already keeps the OSK unfocused.
+  re-focuses whatever was focused before it, and pins each new OSK window
+  above the rest of the stack (`make_above`) so it never ends up under the
+  app being typed into. niri needs no extension — its `open-focused false`
+  window rule already keeps the OSK unfocused, and floating windows render
+  above tiles there.
 - **Lizard persistence trap (Triton)**: runtime lizard writes can stick in
   firmware; only a power-cycle restores defaults. The driver never touches
   lizard at runtime on Linux — the watchdog thread exists purely for
