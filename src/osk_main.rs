@@ -21,7 +21,11 @@ const IDLE_GRACE: f32 = 0.4;
 /// Session-start retry budget: the GNOME autostart entry fires while udev
 /// uaccess ACLs / the Wayland environment are still settling, and a one-shot
 /// init failure used to kill keebs until the next manual restart.
-const INIT_TRIES: u32 = 30;
+/// 100 ms polling over the same 30 s budget: with the Valve controller as
+/// the ONLY input device, every retry step delays typing, so the old 1 s
+/// steps turned a transient blocker into ~40 s of dead input every login.
+const INIT_TRIES: u32 = 300;
+const INIT_RETRY_SLEEP: Duration = Duration::from_millis(100);
 /// Caps refresh cadence (sysfs LED read — cheap, but never per frame).
 const SLOW_TICK_MS: u64 = 250;
 
@@ -63,10 +67,12 @@ pub fn run(stop: Arc<StopFlag>) {
             }
             tries += 1;
             let err = s.get_error_string();
-            diag::log(&format!(
-                "osk: SDL_Init failed ({err}); retry {tries}/{INIT_TRIES}"
-            ));
-            if tries >= INIT_TRIES || stop.wait(Duration::from_secs(1)) {
+            if tries == 1 || tries % 10 == 0 {
+                diag::log(&format!(
+                    "osk: SDL_Init failed ({err}); retry {tries}/{INIT_TRIES}"
+                ));
+            }
+            if tries >= INIT_TRIES || stop.wait(INIT_RETRY_SLEEP) {
                 eprintln!("osk: SDL_Init failed after {tries} tries: {err}");
                 return;
             }
@@ -91,11 +97,13 @@ pub fn run(stop: Arc<StopFlag>) {
         .find_map(|(try_n, res)| match res {
             Ok(k) => Some(k),
             Err(e) => {
-                diag::log(&format!(
-                    "osk: uinput init failed ({e}); retry {try_n}/{INIT_TRIES}"
-                ));
+                if try_n == 1 || try_n % 10 == 0 {
+                    diag::log(&format!(
+                        "osk: uinput init failed ({e}); retry {try_n}/{INIT_TRIES}"
+                    ));
+                }
                 if try_n < INIT_TRIES {
-                    let _ = stop.wait(Duration::from_secs(1));
+                    let _ = stop.wait(INIT_RETRY_SLEEP);
                 }
                 None
             }

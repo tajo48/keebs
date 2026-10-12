@@ -149,7 +149,7 @@ impl Screen {
             // settling (same race as the uinput retries in osk_main/manager).
             let mut window = std::ptr::null_mut();
             let mut transparent = false;
-            for _ in 0..5 {
+            for attempt in 0..20 {
                 window = (s.create_window)(
                     title.as_ptr(),
                     w,
@@ -165,10 +165,11 @@ impl Screen {
                     break;
                 }
                 diag::log(&format!(
-                    "osk: SDL_CreateWindow failed ({}); retry",
-                    s.get_error_string()
+                    "osk: SDL_CreateWindow failed ({}); retry {}/20",
+                    s.get_error_string(),
+                    attempt + 1
                 ));
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(250));
             }
             assert!(
                 !window.is_null(),

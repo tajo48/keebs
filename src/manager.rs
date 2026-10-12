@@ -26,7 +26,11 @@ use crate::vkb;
 const STICK_DEADZONE: f32 = 14000.0;
 /// Session-start retry budget for the manager's uinput devices — same race
 /// as osk_main's INIT_TRIES (uaccess ACLs settle seconds after login).
-const INIT_TRIES: u32 = 30;
+/// 100 ms polling over the same 30 s budget: with the Valve controller as
+/// the ONLY input device, every retry step delays typing, so the old 1 s
+/// steps turned a transient blocker into ~40 s of dead input every login.
+const INIT_TRIES: u32 = 300;
+const INIT_RETRY_SLEEP: Duration = Duration::from_millis(100);
 const STICK_HOLD_DELAY: f32 = 0.5;
 const STICK_VOL_REPEAT: f32 = 0.021;
 const KBD_STICK_HOLD_DELAY: f32 = 0.35;
@@ -969,11 +973,13 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                 break;
             }
             Err(e) => {
-                diag::log(&format!(
-                    "osk: manager init failed ({e}); retry {try_n}/{INIT_TRIES}"
-                ));
+                if try_n == 1 || try_n % 10 == 0 {
+                    diag::log(&format!(
+                        "osk: manager init failed ({e}); retry {try_n}/{INIT_TRIES}"
+                    ));
+                }
                 if try_n < INIT_TRIES {
-                    let _ = stop.wait(Duration::from_secs(1));
+                    let _ = stop.wait(INIT_RETRY_SLEEP);
                 }
             }
         }

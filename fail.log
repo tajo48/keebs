@@ -1,0 +1,75 @@
+Failed ask_user call (2026-10-12) — cancelled by user; layout rendered broken
+(the \r escapes littered through every string). Clean content of the call:
+
+accent: red
+timeout_secs: 600
+
+QUESTION [header: "Fix direction"]:
+  GNOME/mutter gives every native Wayland toplevel keyboard focus when it
+  maps — there is no client-side opt-out (unlike niri's "open-focused false"
+  window rule). Which fix do you want?
+
+OPTION 1 (recommended): "XWayland fallback (Recommended)"
+  description:
+    On GNOME, keebs creates the OSK as an XWayland window with
+    override-redirect + no-focus hints — exactly the window type that worked
+    yesterday. Native Wayland window stays for niri. Proven, small, immediate.
+  preview:
+    // osk_main.rs + render.rs
+    if std::env::var("XDG_CURRENT_DESKTOP")
+        .map(|d| d.contains("GNOME"))
+        .unwrap_or(false)
+    {
+        // mutter focuses every xdg_toplevel; only an
+        // override-redirect X11 window can opt out.
+        std::env::set_var("SDL_VIDEODRIVER", "x11");
+        // + X11::XSetWindowAttributes override-redirect,
+        // WM_HINTS input=false, skip-taskbar
+    }
+    // else: native Wayland + niri window-rule (open-focused false)
+
+OPTION 2: "Subsurface rewrite"
+  description:
+    OSK becomes a wl_subsurface over a tiny hidden toplevel — subsurfaces
+    never get keyboard focus on any compositor. Fully pure-Wayland, but needs
+    hand-rolled libwayland protocol code and is untested territory
+    (rendering/input risk).
+  preview:
+    // render.rs — pure Wayland, no X11
+    // 1. create 1x1 hidden toplevel (parent)
+    // 2. OSK window: SDL_PROP_WINDOW_CREATE_WAYLAND
+    //    _SURFACE_ROLE_CUSTOM_BOOLEAN = true
+    // 3. dlopen libwayland-client:
+    //    wl_subcompositor_get_subsurface(
+    //        osk_surface, parent_surface)
+    // 4. sync position per frame (wl_subsurface.set_position)
+    // keyboard focus: never leaves the target app OK
+
+OPTION 3: "GNOME Shell extension"
+  description:
+    keebs stays pure Wayland; a tiny GNOME Shell extension watches for the
+    keebs.osk window and re-focuses whatever was focused before it.
+    Compositor-side fix, but a new artifact to maintain in the Flake and it
+    can't be tested from here.
+  preview:
+    // Flake: new extension package + gnome.shell.enableExtension
+    // extension.js:
+    const prev = display.focus_window;
+    global.compositor.connect('window-created', w => {
+      if (w.get_app_id() === 'keebs.osk')
+        prev?.activate();
+      // also re-focus on OSK show/hide cycle
+    });
+    // keebs code: unchanged
+
+CONTEXT (established before the question):
+  - Symptom confirmed: OSK toplevel holds keyboard focus; injected uinput
+    keys land in keebs itself ("text goes to the wrong app — the keyboard").
+  - Manual terminal restart is broken too -> activation-token theory DEAD.
+  - Flake rebuilt with the env -u .desktop wrapper -> wrapper live, no effect.
+  - Root cause: pure-Wayland pivot (commit 218da45) deployed to the machine
+    today (pin b6806f2, committed 2026-10-12 00:58). Yesterday's working
+    binary predated the pivot: X11 override-redirect window, which mutter
+    cannot focus. Native xdg_toplevel on GNOME always takes focus; no client
+    API to opt out; niri handles it via its window rule, GNOME has no
+    equivalent.
