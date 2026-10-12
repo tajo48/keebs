@@ -167,10 +167,12 @@ Windows tree.
   every native Wayland toplevel on map and offers no client-side opt-out
   (the `SDL_SetWindowFocusable(false)` flag has no Wayland protocol to
   express it), so the companion GNOME Shell extension `keebs-focus@keebs`
-  (shipped by the Flake module) watches for the `keebs.osk` window and
-  re-focuses whatever was focused before it, and pins each new OSK window
-  above the rest of the stack (`make_above`) so it never ends up under the
-  app being typed into. niri needs no extension — its `open-focused false`
+  (shipped by the Flake module) watches for the `keebs.osk` window, re-focuses
+  whatever was focused before it, pins each new OSK window above the rest of
+  the stack (`make_above`), and places it bottom-center of the work area
+  (`move_frame`) so it never ends up under the app being typed into. niri
+  needs no extension — its `open-focused false` window rule already keeps
+  the OSK unfocused, and its floating window-rule anchors it to the bottom.
   window rule already keeps the OSK unfocused, and floating windows render
   above tiles there.
 - **Lizard persistence trap (Triton)**: runtime lizard writes can stick in
