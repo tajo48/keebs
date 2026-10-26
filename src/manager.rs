@@ -961,9 +961,12 @@ fn activate(
 
 /// Switch the app posture. `pad_mode=true`: keyboard torn down (held keys
 /// released, OSK hidden, virtual pad cleared) and — if the active device is
-/// known — swallowed immediately. `false`: pad cleared, OSK shown; the
-/// keyboard-mode per-frame lizard policy re-asserts the grab on the next
-/// frame, so no explicit lizard call is needed here.
+/// known — swallowed immediately. `false`: pad cleared, OSK left AS-IS —
+/// STEAM lands in mouse mode (lizard ON per the per-frame policy while the
+/// OSK is hidden, so the firmware pads drive the desktop cursor natively);
+/// R5 opens the keyboard when typing is wanted. The keyboard-mode per-frame
+/// lizard policy re-asserts the grab on the next frame, so no explicit
+/// lizard call is needed here.
 fn enter_mode(
     pad_mode: bool,
     manager: &mut ControllerManager,
@@ -985,7 +988,8 @@ fn enter_mode(
             p.release_all();
         }
         manager.reset_for_device_switch(state);
-        state.show();
+        // No state.show() here: STEAM = mouse mode, keyboard stays closed.
+        // R5 toggles it; B also closes it once open.
     }
 }
 

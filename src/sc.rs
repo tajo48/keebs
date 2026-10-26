@@ -349,6 +349,11 @@ pub const DECK_INPUT_REPORT_ID: u8 = 0x01;
 pub const DECK_INPUT_REPORT_LEN: usize = 64;
 /// Flip to -1 if the OSK cursor ever moves the wrong vertical way.
 pub const DECK_Y_SIGN: i16 = 1;
+/// Stick Y runs OPPOSITE to the pads: up = negative raw (pads are up =
+/// positive, which DECK_Y_SIGN keeps). Gamepad axes want up = negative, so
+/// stick y is negated here — hardware-verified in-game 2026-10-26 (up/down
+/// swapped before the flip).
+pub const DECK_STICK_Y_SIGN: i32 = -1;
 
 /// (byte, bit, button mask), calibrated over calibrate_deck 1/2/5/6.
 /// Byte 13 mixes REAL paddle bits (1=L4, 2=R4) with counter bits — only the
@@ -413,18 +418,20 @@ const fn expand_deck_buttons() -> [(usize, usize, u32); 26] {
 
 pub const DECK_BUTTONS: [(usize, usize, u32); 26] = expand_deck_buttons();
 
-/// Raw stick axes (lx, ly, rx, ry) for auto-centering.
-pub fn deck_sticks(data: &[u8]) -> Option<[i16; 4]> {
+/// Raw stick axes (lx, ly, rx, ry) for auto-centering. Deck sticks are
+/// SIGNED 16-bit, rest ≈ 0 (rest offsets observed up to ~900). Returned as
+/// i32 so the center math can never overflow.
+pub fn deck_sticks(data: &[u8]) -> Option<[i32; 4]> {
     if data.len() < DECK_INPUT_REPORT_LEN || data[0] != DECK_INPUT_REPORT_ID {
         return None;
     }
-    let g = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]);
+    let g = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]) as i32;
     Some([g(48), g(50), g(52), g(54)])
 }
 
 /// Parse one 64-byte 0x01 Deck frame. `centers` holds the averaged rest
 /// offsets for (lx, ly, rx, ry) — raw rest offsets were observed up to ~900.
-pub fn parse_deck(data: &[u8], centers: [i16; 4]) -> Option<SciInput> {
+pub fn parse_deck(data: &[u8], centers: [i32; 4]) -> Option<SciInput> {
     if data.len() < DECK_INPUT_REPORT_LEN || data[0] != DECK_INPUT_REPORT_ID {
         return None;
     }
@@ -436,6 +443,11 @@ pub fn parse_deck(data: &[u8], centers: [i16; 4]) -> Option<SciInput> {
     }
     let g = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]);
     let u = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]);
+    let gs = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]) as i32;
+    // Signed-axis delta, saturated into the i16 the rest of the pipeline
+    // speaks. The subtraction MUST happen in i32 — in i16 it wraps whenever
+    // the center estimate is large, which reads as a deflected stick.
+    let sat = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
     let [cx, cy, crx, cry] = centers;
     let y = DECK_Y_SIGN;
     Some(SciInput {
@@ -448,10 +460,10 @@ pub fn parse_deck(data: &[u8], centers: [i16; 4]) -> Option<SciInput> {
         lpad_y: g(18) * y,
         rpad_x: g(20),
         rpad_y: g(22) * y,
-        lstick_x: g(48) - cx,
-        lstick_y: (g(50) - cy) * y,
-        rstick_x: g(52) - crx,
-        rstick_y: (g(54) - cry) * y,
+        lstick_x: sat(gs(48) - cx),
+        lstick_y: sat((gs(50) - cy) * DECK_STICK_Y_SIGN),
+        rstick_x: sat(gs(52) - crx),
+        rstick_y: sat((gs(54) - cry) * DECK_STICK_Y_SIGN),
     })
 }
 
@@ -664,5 +676,63 @@ mod tests {
         let mut f = [0u8; 64];
         f[0] = CLASSIC_INPUT_STATUS;
         assert!(parse_classic(&f[..32]).is_none()); // too short
+    }
+
+    /// Deck sticks are SIGNED 16-bit with rest ≈ 0. Regression guards:
+    /// (1) the i16 read must never wrap at rest (the original bug — garbage
+    /// left/down), (2) the i32 center subtraction must never overflow into
+    /// an inverted axis (the u16-detour bug — axes collapsed to one side).
+    #[test]
+    fn parse_deck_sticks_signed() {
+        let put = |f: &mut [u8; 64], o: usize, v: i16| {
+            f[o] = v as u8;
+            f[o + 1] = (v >> 8) as u8;
+        };
+        let frame = |lx: i16, ly: i16, rx: i16, ry: i16| {
+            let mut f = [0u8; 64];
+            f[0] = DECK_INPUT_REPORT_ID as u8;
+            put(&mut f, 48, lx);
+            put(&mut f, 50, ly);
+            put(&mut f, 52, rx);
+            put(&mut f, 54, ry);
+            f
+        };
+        let c = [0i32; 4];
+
+        // Rest = centered on all four axes.
+        let s = parse_deck(&frame(0, 0, 0, 0), c).unwrap();
+        assert_eq!(
+            (s.lstick_x, s.lstick_y, s.rstick_x, s.rstick_y),
+            (0, 0, 0, 0)
+        );
+
+        // Full-left raw (i16::MIN) must read as full NEGATIVE x — never a
+        // wrap to positive, never a saturation to positive.
+        let s = parse_deck(&frame(i16::MIN, 0, 0, 0), c).unwrap();
+        assert_eq!(s.lstick_x, i16::MIN);
+        // Full-right raw (i16::MAX) must read as full positive x.
+        let s = parse_deck(&frame(i16::MAX, 0, 0, 0), c).unwrap();
+        assert_eq!(s.lstick_x, i16::MAX);
+        // Down raw (i16::MAX) must read negative y, up raw (i16::MIN)
+        // positive y — DECK_STICK_Y_SIGN negation (stick y inverted in hw);
+        // up also proves the i32 saturation lands at +MAX, not a wrap.
+        let s = parse_deck(&frame(0, i16::MIN, 0, 0), c).unwrap();
+        assert_eq!(s.lstick_y, i16::MAX);
+        let s = parse_deck(&frame(0, i16::MAX, 0, 0), c).unwrap();
+        assert_eq!(s.lstick_y, -32767);
+        // Right stick decodes the same way.
+        let s = parse_deck(&frame(0, 0, i16::MIN, i16::MAX), c).unwrap();
+        assert_eq!(s.rstick_x, i16::MIN);
+        assert_eq!(s.rstick_y, -32767);
+
+        // Garbage center estimates must shift — never invert — the axis.
+        let s = parse_deck(&frame(i16::MIN, 0, 0, 0), [900, 0, 0, 0]).unwrap();
+        assert_eq!(s.lstick_x, i16::MIN); // sat at MIN, still negative
+        let s = parse_deck(&frame(i16::MAX, 0, 0, 0), [900, 0, 0, 0]).unwrap();
+        assert_eq!(s.lstick_x, i16::MAX - 900);
+
+        // deck_sticks surfaces raw signed values as i32.
+        let sticks = deck_sticks(&frame(-1000, 5, 32767, -32768)).unwrap();
+        assert_eq!(sticks, [-1000, 5, 32767, -32768]);
     }
 }

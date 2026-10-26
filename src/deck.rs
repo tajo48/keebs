@@ -226,26 +226,29 @@ impl DeckController {
             let mut buf = [0u8; 64];
             if let ReadOutcome::Data(m) = self.read_frame(&mut buf, 50) {
                 if let Some([lx, ly, rx, ry]) = deck_sticks(&buf[..m]) {
-                    sums[0] += lx as i32;
-                    sums[1] += ly as i32;
-                    sums[2] += rx as i32;
-                    sums[3] += ry as i32;
+                    sums[0] += lx;
+                    sums[1] += ly;
+                    sums[2] += rx;
+                    sums[3] += ry;
                     n += 1;
                 }
             }
         }
         let centers = if n > 0 {
             [
-                (sums[0] / n as i32) as i16,
-                (sums[1] / n as i32) as i16,
-                (sums[2] / n as i32) as i16,
-                (sums[3] / n as i32) as i16,
+                sums[0] / n as i32,
+                sums[1] / n as i32,
+                sums[2] / n as i32,
+                sums[3] / n as i32,
             ]
         } else {
             [0; 4]
         };
 
         let mut last_lizard = Instant::now();
+        let raw_sticks = std::env::var("KEEBS_DECK_RAW").is_ok_and(|v| v == "1");
+        let mut last_raw: Vec<u8> = Vec::new();
+        let mut last_raw_log = Instant::now() - Duration::from_secs(1);
         loop {
             if self.stop.is_set() {
                 break;
@@ -283,6 +286,37 @@ impl DeckController {
                 }
                 ReadOutcome::Quiet => continue,
                 ReadOutcome::Data(m) => {
+                    // Raw stick-region capture (KEEBS_DECK_RAW=1): every time
+                    // bytes 44..56 change, log them as u16 AND i16 with the
+                    // current stick decode. Rate-limit: at most one line per
+                    // 120 ms while the values keep changing.
+                    if raw_sticks && m >= 56 {
+                        let cur = &buf[44..56];
+                        if cur != last_raw.as_slice()
+                            && last_raw_log.elapsed() >= Duration::from_millis(120)
+                        {
+                            let u16s: Vec<String> = cur
+                                .chunks_exact(2)
+                                .map(|p| format!("{:5}", u16::from_le_bytes([p[0], p[1]])))
+                                .collect();
+                            let i16s: Vec<String> = cur
+                                .chunks_exact(2)
+                                .map(|p| format!("{:5}", i16::from_le_bytes([p[0], p[1]])))
+                                .collect();
+                            let dec = deck_sticks(&buf[..m])
+                                .map(|s| format!("{:?}", s))
+                                .unwrap_or_default();
+                            diag::log(&format!(
+                                "deck-raw: hex={:02x?} u16=[{}] i16=[{}] deck_sticks={}",
+                                cur,
+                                u16s.join(" "),
+                                i16s.join(" "),
+                                dec
+                            ));
+                            last_raw = cur.to_vec();
+                            last_raw_log = Instant::now();
+                        }
+                    }
                     if let Some(sci) = parse_deck(&buf[..m], centers) {
                         cb(self, &sci);
                     }
