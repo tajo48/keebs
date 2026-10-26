@@ -7,6 +7,8 @@
 //! `--listener`: phase-1 passive device listener (prints button edges and
 //! battery, LGRIP1/L4 -> Left Shift via uinput).
 //! `--probe-sc`: guided calibration for the classic (2015) Steam Controller.
+//! `--pad`: virtual Xbox 360 gamepad — real controllers hidden from the
+//! desktop, everything forwarded into one standard pad (Steam-safe mode).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -211,6 +213,7 @@ fn main() {
     keebs::diag::start();
     let listener_mode = std::env::args().any(|a| a == "--listener");
     let probe_mode = std::env::args().any(|a| a == "--probe-sc");
+    let pad_mode = std::env::args().any(|a| a == "--pad");
     let stop = Arc::new(StopFlag::new());
     {
         let stop = Arc::clone(&stop);
@@ -221,6 +224,12 @@ fn main() {
 
     if probe_mode {
         classic::probe();
+        return;
+    }
+
+    if pad_mode {
+        println!("keebs — virtual gamepad mode");
+        keebs::pad::run(stop);
         return;
     }
 

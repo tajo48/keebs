@@ -12,16 +12,20 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use crate::sc::{SciInput, buttons};
+
 // uinput ioctl interface (values are architecture-stable on linux).
 const UI_SET_EVBIT: u32 = 0x4004_5564;
 const UI_SET_KEYBIT: u32 = 0x4004_5565;
 const UI_SET_RELBIT: u32 = 0x4004_5566;
+const UI_SET_ABSBIT: u32 = 0x4004_5567;
 const UI_DEV_CREATE: u32 = 0x0000_5501;
 const UI_DEV_DESTROY: u32 = 0x0000_5502;
 
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
 
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
@@ -76,8 +80,15 @@ struct RawUinput {
 }
 
 impl RawUinput {
-    /// `id`: (vendor, product, bustype) reported by the virtual device.
-    fn create(name: &str, keys: &[u16], rels: &[u16], id: (u16, u16, u16)) -> io::Result<Self> {
+    /// `keys`: EV_KEY codes to enable; `rels`: EV_REL codes; `abs`: (code,
+    /// min, max) triplets for EV_ABS axes.
+    fn create(
+        name: &str,
+        keys: &[u16],
+        rels: &[u16],
+        abs: &[(u16, i32, i32)],
+        id: (u16, u16, u16),
+    ) -> io::Result<Self> {
         let path = std::ffi::CString::new("/dev/uinput").unwrap();
         let mut fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
         if fd < 0 {
@@ -108,6 +119,12 @@ impl RawUinput {
                 set(UI_SET_RELBIT, *r as u32)?;
             }
         }
+        if !abs.is_empty() {
+            set(UI_SET_EVBIT, EV_ABS as u32)?;
+            for (code, _, _) in abs {
+                set(UI_SET_ABSBIT, *code as u32)?;
+            }
+        }
         let mut setup = UinputUserDev {
             name: [0; 80],
             id: UinputId {
@@ -122,6 +139,10 @@ impl RawUinput {
             absfuzz: [0; 64],
             absflat: [0; 64],
         };
+        for (code, min, max) in abs {
+            setup.absmin[*code as usize] = *min;
+            setup.absmax[*code as usize] = *max;
+        }
         let bytes = name.as_bytes();
         let len = bytes.len().min(79);
         setup.name[..len].copy_from_slice(&bytes[..len]);
@@ -347,6 +368,7 @@ impl Keyboard {
             "keebs-virtual-kb",
             &codes,
             &[],
+            &[],
             (0x28DE, 0x0001, BUS_VIRTUAL),
         )?;
         // Compositors take a moment to notice a freshly created uinput
@@ -468,6 +490,7 @@ impl Mouse {
             "keebs-virtual-mouse",
             &[BTN_LEFT, BTN_RIGHT, BTN_MIDDLE],
             &[REL_X, REL_Y, REL_WHEEL, REL_HWHEEL],
+            &[],
             (0x28DE, 0x0002, BUS_VIRTUAL),
         )?;
         thread::sleep(Duration::from_millis(100));
@@ -542,5 +565,240 @@ impl Drop for Mouse {
             let _ = dev.emit(EV_KEY, b, 0);
         }
         let _ = dev.syn();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Virtual gamepad (--pad mode): Xbox 360 layout so SDL / Steam Input / Proton
+// auto-map it with zero configuration. Identity is Microsoft's X-Box 360 pad
+// on purpose — a custom VID/PID would land as an "unknown controller".
+// ---------------------------------------------------------------------------
+
+const BUS_USB: u16 = 0x03;
+
+const BTN_SOUTH: u16 = 0x130; // physical A
+const BTN_EAST: u16 = 0x131; // physical B
+const BTN_NORTH: u16 = 0x133; // physical X (xpad.c convention)
+const BTN_WEST: u16 = 0x134; // physical Y
+const BTN_TL: u16 = 0x136;
+const BTN_TR: u16 = 0x137;
+const BTN_SELECT: u16 = 0x13a;
+const BTN_START: u16 = 0x13b;
+const BTN_MODE: u16 = 0x13c; // guide / STEAM
+const BTN_THUMBL: u16 = 0x13d;
+const BTN_THUMBR: u16 = 0x13e;
+const BTN_DPAD_UP: u16 = 0x220;
+const BTN_DPAD_DOWN: u16 = 0x221;
+const BTN_DPAD_LEFT: u16 = 0x222;
+const BTN_DPAD_RIGHT: u16 = 0x223;
+// Back paddles land on the trigger-happy block — readable by everything,
+// mapped by nothing by default.
+const BTN_HAPPY1: u16 = 0x2c0;
+const BTN_HAPPY2: u16 = 0x2c1;
+const BTN_HAPPY3: u16 = 0x2c2;
+const BTN_HAPPY4: u16 = 0x2c3;
+
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+const ABS_Z: u16 = 0x02; // left trigger
+const ABS_RX: u16 = 0x03;
+const ABS_RY: u16 = 0x04;
+const ABS_RZ: u16 = 0x05; // right trigger
+
+/// Fixed state-slot order: which code each slot carries, and whether it is
+/// an EV_KEY button or an EV_ABS axis.
+const PAD_SLOTS: &[(u16, bool)] = &[
+    (BTN_SOUTH, false),
+    (BTN_EAST, false),
+    (BTN_NORTH, false),
+    (BTN_WEST, false),
+    (BTN_TL, false),
+    (BTN_TR, false),
+    (BTN_SELECT, false),
+    (BTN_START, false),
+    (BTN_MODE, false),
+    (BTN_THUMBL, false),
+    (BTN_THUMBR, false),
+    (BTN_DPAD_UP, false),
+    (BTN_DPAD_DOWN, false),
+    (BTN_DPAD_LEFT, false),
+    (BTN_DPAD_RIGHT, false),
+    (BTN_HAPPY1, false),
+    (BTN_HAPPY2, false),
+    (BTN_HAPPY3, false),
+    (BTN_HAPPY4, false),
+    (ABS_X, true),
+    (ABS_Y, true),
+    (ABS_RX, true),
+    (ABS_RY, true),
+    (ABS_Z, true),
+    (ABS_RZ, true),
+];
+
+pub struct Gamepad {
+    dev: Mutex<RawUinput>,
+    /// Last emitted value per slot — only deltas hit the wire (a 250 Hz
+    /// Deck would otherwise spam ~25 events/frame into evdev consumers).
+    prev: Mutex<Vec<i32>>,
+}
+
+impl Gamepad {
+    pub fn new() -> io::Result<Self> {
+        const STICK_MIN: i32 = i16::MIN as i32;
+        const STICK_MAX: i32 = i16::MAX as i32;
+        let keys: Vec<u16> = PAD_SLOTS
+            .iter()
+            .filter(|(_, a)| !a)
+            .map(|(c, _)| *c)
+            .collect();
+        let abs: Vec<(u16, i32, i32)> = PAD_SLOTS
+            .iter()
+            .filter(|(_, a)| *a)
+            .map(|(c, _)| {
+                (
+                    *c,
+                    if *c == ABS_Z || *c == ABS_RZ {
+                        0
+                    } else {
+                        STICK_MIN
+                    },
+                    STICK_MAX,
+                )
+            })
+            .collect();
+        let dev = RawUinput::create(
+            "keebs-virtual-gamepad",
+            &keys,
+            &[],
+            &abs,
+            (0x045e, 0x028e, BUS_USB),
+        )?;
+        // Same settle rationale as Keyboard/Mouse: give evdev consumers a
+        // beat to enumerate before the first real frame.
+        thread::sleep(Duration::from_millis(100));
+        let n = PAD_SLOTS.len();
+        Ok(Self {
+            dev: Mutex::new(dev),
+            prev: Mutex::new(vec![0; n]),
+        })
+    }
+
+    /// Translate one controller frame into the virtual pad.
+    /// `pads_as_sticks`: classic 2015 has no sticks — its pads ARE the
+    /// sticks; Deck/Triton use their real sticks and keep the pads out of
+    /// the axis path (rest offsets would drift the view in-game).
+    pub fn emit_sci(&self, s: &SciInput, pads_as_sticks: bool) {
+        let b = s.buttons;
+        let bit = |m: u32| i32::from(b & m != 0);
+        // Pad CLICK feeds the stick buttons in pads-as-sticks mode (pressing
+        // the pad = L3/R3 press, like lizard's own behavior).
+        let thumb_l = bit(buttons::L3)
+            | if pads_as_sticks {
+                bit(buttons::LPAD)
+            } else {
+                0
+            };
+        let thumb_r = bit(buttons::R3)
+            | if pads_as_sticks {
+                bit(buttons::RPAD)
+            } else {
+                0
+            };
+        let (lx, ly, rx, ry) = if pads_as_sticks {
+            (
+                s.lpad_x as i32,
+                s.lpad_y as i32,
+                s.rpad_x as i32,
+                s.rpad_y as i32,
+            )
+        } else {
+            (
+                s.lstick_x as i32,
+                s.lstick_y as i32,
+                s.rstick_x as i32,
+                s.rstick_y as i32,
+            )
+        };
+        let state = [
+            bit(buttons::A),
+            bit(buttons::B),
+            bit(buttons::X),
+            bit(buttons::Y),
+            bit(buttons::LB),
+            bit(buttons::RB),
+            bit(buttons::VIEW),
+            bit(buttons::START),
+            bit(buttons::STEAM),
+            thumb_l,
+            thumb_r,
+            bit(buttons::DPAD_UP),
+            bit(buttons::DPAD_DOWN),
+            bit(buttons::DPAD_LEFT),
+            bit(buttons::DPAD_RIGHT),
+            bit(buttons::LGRIP1),
+            bit(buttons::LGRIP2),
+            bit(buttons::RGRIP1),
+            bit(buttons::RGRIP2),
+            lx,
+            ly,
+            rx,
+            ry,
+            s.ltrig as i32,
+            s.rtrig as i32,
+        ];
+        debug_assert_eq!(state.len(), PAD_SLOTS.len());
+        let mut prev = self.prev.lock().unwrap();
+        let dev = self.dev.lock().unwrap();
+        let mut changed = false;
+        for (i, val) in state.iter().enumerate() {
+            if prev[i] == *val {
+                continue;
+            }
+            let (code, is_abs) = PAD_SLOTS[i];
+            let rc = if is_abs {
+                dev.emit(EV_ABS, code, *val)
+            } else {
+                dev.emit(EV_KEY, code, *val)
+            };
+            if let Err(e) = rc {
+                eprintln!("uinput: gamepad slot {i} failed: {e}");
+            }
+            prev[i] = *val;
+            changed = true;
+        }
+        if changed {
+            let _ = dev.syn();
+        }
+    }
+
+    /// Center everything (idempotent). Runs on drop so the app can never
+    /// leave a button stuck or a stick floored in a running game.
+    pub fn release_all(&self) {
+        let mut prev = self.prev.lock().unwrap();
+        let dev = self.dev.lock().unwrap();
+        for (i, (code, is_abs)) in PAD_SLOTS.iter().enumerate() {
+            if prev[i] == 0 {
+                continue;
+            }
+            let rc = if *is_abs {
+                // Sticks/triggers rest at 0 per our declared ranges… except
+                // stick axes whose neutral is 0 too (min is negative) — 0 is
+                // correct for all six axes.
+                dev.emit(EV_ABS, *code, 0)
+            } else {
+                dev.emit(EV_KEY, *code, 0)
+            };
+            if let Err(e) = rc {
+                eprintln!("uinput: gamepad release slot {i} failed: {e}");
+            }
+            prev[i] = 0;
+        }
+        let _ = dev.syn();
+    }
+}
+
+impl Drop for Gamepad {
+    fn drop(&mut self) {
+        self.release_all();
     }
 }

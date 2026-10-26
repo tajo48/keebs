@@ -95,6 +95,37 @@ edges + battery, LGRIP1/L4 -> Left Shift). Detects the Steam Deck, the
 Steam Controller 2026 (Triton), and the classic Steam Controller (2015,
 0x1102 dongle / 0x1142 wired) automatically.
 
+### Virtual gamepad mode (`--pad`)
+
+```sh
+nix run .#keebs -- --pad
+```
+
+No OSK, no chords, no desktop input — instead every attached controller
+(Deck / Triton / classic) is translated into **one standard Xbox 360
+gamepad**. The real hardware is hidden from the desktop entirely (its evdev
+nodes are grabbed, its vendor interface claimed), and the only thing games,
+Steam and Steam Input ever see is `keebs-virtual-gamepad` — a uinput device
+posing as a Microsoft X-Box 360 pad, so SDL/Proton/Steam Input auto-map it
+with zero configuration.
+
+This is the Steam-safe mode: keebs never fights the Steam client for the
+device, because Steam only ever talks to the virtual pad. Mapping:
+
+| controller | virtual pad |
+|---|---|
+| A/B/X/Y | A/B/X/Y (kernel xpad convention) |
+| LB/RB, L2/R2 | LB/RB + analog triggers |
+| sticks | left/right stick + L3/R3 |
+| D-pad | D-pad |
+| START / VIEW / STEAM | Start / Select / Guide |
+| back paddles (L4/L5/R4/R5) | BTN_TRIGGER_HAPPY1–4 (visible, unmapped by default) |
+
+The classic 2015 has no sticks — its pads become the sticks (pad click =
+L3/R3). On Deck/Triton the pads are left unmapped so rest offsets can't
+drift the view in-game. On exit (Ctrl-C) every button is released and the
+sticks centered.
+
 ## Status
 
 **Ported:** Triton (0x1304/0x1302) + Deck (0x1205) + classic Steam Controller

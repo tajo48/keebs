@@ -6,6 +6,7 @@ pub mod lizardguard;
 pub mod manager;
 pub mod osk_main;
 pub mod osk_state;
+pub mod pad;
 pub mod render;
 pub mod sc;
 pub mod sdl3;
