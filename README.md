@@ -42,12 +42,14 @@ The binary needs write access to `/dev/uinput` and the Valve hidraw devices
 `TAG+="uaccess"` udev rules. Licensed under the MIT license (see LICENSE).
 
 Starts hidden in the background, listening for the controller.
-**Steam + X** opens the on-screen keyboard (Steam-dark theme, Selawik
-font); it also listens for the mouse in case you want to click-type:
+**STEAM** toggles between gamepad and keyboard mode (see below); inside
+keyboard mode **R5** opens/closes the on-screen keyboard (Steam-dark theme,
+Selawik font); it also listens for the mouse in case you want to click-type:
 
 | input | action |
 |-------|--------|
-| **Steam + X** | open the OSK |
+| **STEAM** | toggle gamepad <-> keyboard mode (both modes) |
+| **R5** (right lower paddle) | open/close the OSK (keyboard mode) |
 | **B** | close the OSK |
 | **R5** (right lower paddle) | toggle: open when closed, close when open |
 | **left stick / D-pad** | move the key cursor (tap = 1 key, hold = repeat) |
@@ -59,9 +61,8 @@ font); it also listens for the mouse in case you want to click-type:
 | **R4** (right upper paddle) | hold **Shift** |
 | **trackpad touch** | move the pointer; **pad click** / L2/R2 while touched presses the key under it |
 | **right stick** | move the system mouse (point-and-click keys) |
-| **Steam + left stick** | volume / prev-next track |
-| **Steam + VIEW** | Alt+Tab |
-| **L3** | Caps Lock (Steam+L3: play/pause) |
+| **left stick** | volume / prev-next track |
+| **L3** | Caps Lock |
 
 Mouse also works on the OSK directly: hover highlights, left-click presses,
 right-click = Shift, back/forward buttons = Backspace/Space.
@@ -95,22 +96,24 @@ edges + battery, LGRIP1/L4 -> Left Shift). Detects the Steam Deck, the
 Steam Controller 2026 (Triton), and the classic Steam Controller (2015,
 0x1102 dongle / 0x1142 wired) automatically.
 
-### Virtual gamepad mode (`--pad`)
+### Dual mode: STEAM toggles gamepad <-> keyboard
 
-```sh
-nix run .#keebs -- --pad
-```
+The default run feeds every attached controller into **one standard Xbox
+360 gamepad** (games, Steam and Steam Input see `keebs-virtual-gamepad`, a
+uinput device posing as a Microsoft X-Box 360 pad — auto-mapped everywhere,
+zero configuration). Pressing the **STEAM button** flips the whole app into
+keyboard mode: the OSK opens and the controller drives it (table above).
+Pressing STEAM again returns to gamepad mode — held keys are released, pad
+buttons centered, the OSK closes, and the real controllers stay invisible
+to the desktop either way.
 
-No OSK, no chords, no desktop input — instead every attached controller
-(Deck / Triton / classic) is translated into **one standard Xbox 360
-gamepad**. The real hardware is hidden from the desktop entirely (its evdev
-nodes are grabbed, its vendor interface claimed), and the only thing games,
-Steam and Steam Input ever see is `keebs-virtual-gamepad` — a uinput device
-posing as a Microsoft X-Box 360 pad, so SDL/Proton/Steam Input auto-map it
-with zero configuration.
+This is also the Steam-safe mode: keebs never fights the Steam client for
+the device, because Steam only ever talks to the virtual pad. The cost:
+STEAM is the toggle, so it is never forwarded — no guide button in-game,
+and the Steam-chords (Steam+X, Steam+VIEW Alt+Tab, Steam+L3) are gone.
+R5 is the OSK open/close toggle in keyboard mode.
 
-This is the Steam-safe mode: keebs never fights the Steam client for the
-device, because Steam only ever talks to the virtual pad. Mapping:
+Mapping in gamepad mode:
 
 | controller | virtual pad |
 |---|---|
@@ -118,13 +121,15 @@ device, because Steam only ever talks to the virtual pad. Mapping:
 | LB/RB, L2/R2 | LB/RB + analog triggers |
 | sticks | left/right stick + L3/R3 |
 | D-pad | D-pad |
-| START / VIEW / STEAM | Start / Select / Guide |
+| START / VIEW | Start / Select |
 | back paddles (L4/L5/R4/R5) | BTN_TRIGGER_HAPPY1–4 (visible, unmapped by default) |
 
 The classic 2015 has no sticks — its pads become the sticks (pad click =
 L3/R3). On Deck/Triton the pads are left unmapped so rest offsets can't
 drift the view in-game. On exit (Ctrl-C) every button is released and the
 sticks centered.
+
+`--pad` runs gamepad mode ONLY (no OSK window, no toggle).
 
 ## Status
 

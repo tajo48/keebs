@@ -19,7 +19,7 @@ use crate::events::EventMapper;
 use crate::osk_state::{Dir, InputState, OskState, Pointer};
 use crate::sc::{SCI_NULL, SciInput, buttons as btn};
 use crate::triton::SteamController;
-use crate::uinput::{Keyboard, Mouse, keys as K};
+use crate::uinput::{Gamepad, Keyboard, Mouse, keys as K};
 use crate::vkb;
 
 // Stick thresholds / cadences (controller.py class constants).
@@ -929,10 +929,16 @@ fn activate(
     registry: &[(Kind, Reg)],
     active: &mut Option<Kind>,
     kind: Kind,
+    pad_mode: bool,
 ) {
     let Some((_, new)) = registry.iter().find(|(k, _)| *k == kind) else {
         return;
     };
+    // Lizard/grab posture: the controller is SWALLOWED (grab engaged) while
+    // the virtual gamepad owns it OR the OSK is visible; desktop posture
+    // otherwise. In keyboard mode handle_input re-asserts per frame anyway —
+    // this only matters for pad mode, where no per-frame policy runs.
+    let swallowed = pad_mode || state.is_visible();
     if let Some(a) = *active
         && let Some((_, old)) = registry.iter().find(|(k, _)| *k == a)
     {
@@ -940,9 +946,10 @@ fn activate(
         // OSK is hidden (visible -> OFF, same rule the supervision tick
         // enforces for inactive devices — its firmware mouse must not fight
         // the open keyboard).
-        old.dev.set_lizard(!state.is_visible());
+        old.dev.set_lizard(!swallowed);
     }
     manager.reset_for_device_switch(state);
+    new.dev.set_lizard(!swallowed);
     let dev = new.dev.clone();
     state.set_haptic_tick(Arc::new(move || {
         let dev = dev.clone();
@@ -950,6 +957,36 @@ fn activate(
     }));
     *active = Some(kind);
     diag::log(&format!("osk: active controller: {kind:?}"));
+}
+
+/// Switch the app posture. `pad_mode=true`: keyboard torn down (held keys
+/// released, OSK hidden, virtual pad cleared) and — if the active device is
+/// known — swallowed immediately. `false`: pad cleared, OSK shown; the
+/// keyboard-mode per-frame lizard policy re-asserts the grab on the next
+/// frame, so no explicit lizard call is needed here.
+fn enter_mode(
+    pad_mode: bool,
+    manager: &mut ControllerManager,
+    state: &Arc<OskState>,
+    pad: &Option<Arc<Gamepad>>,
+    dev: Option<&Device>,
+) {
+    if pad_mode {
+        manager.reset_for_device_switch(state);
+        state.close();
+        if let Some(p) = pad {
+            p.release_all();
+        }
+        if let Some(d) = dev {
+            d.set_lizard(false);
+        }
+    } else {
+        if let Some(p) = pad {
+            p.release_all();
+        }
+        manager.reset_for_device_switch(state);
+        state.show();
+    }
 }
 
 /// Controller thread body. ONE reader thread per attached device (Deck /
@@ -994,6 +1031,20 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
         }
     };
     diag::log("manager: uinput devices ready (input path live)");
+
+    // Virtual gamepad for pad mode (STEAM toggles keyboard <-> gamepad).
+    // Failure keeps keyboard mode alive; the toggle then only closes the OSK.
+    let pad: Option<Arc<Gamepad>> = match Gamepad::new() {
+        Ok(p) => Some(Arc::new(p)),
+        Err(e) => {
+            diag::log(&format!(
+                "mode: virtual gamepad unavailable ({e}) — STEAM stays keyboard-only"
+            ));
+            None
+        }
+    };
+    let mut pad_mode = false;
+    diag::log("mode: keyboard (startup); STEAM toggles keyboard <-> gamepad");
 
     /// The active device must be idle this long before another can take over.
     const SWITCH_IDLE: Duration = Duration::from_millis(300);
@@ -1105,7 +1156,10 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                 if Some(*k) == active {
                     continue;
                 }
-                let want = !vis;
+                // Pad mode swallows EVERY device — an idle controller's
+                // firmware mouse must not leak into the game alongside the
+                // virtual pad.
+                let want = if pad_mode { false } else { !vis };
                 if r.lizard_sent != Some(want)
                     || r.lizard_sent_at.elapsed() > Duration::from_secs(3)
                 {
@@ -1127,7 +1181,9 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                     .iter()
                     .find(|(k, r)| *k != a && r.last_frame.elapsed() < GONE)
                 {
-                    Some((k, _)) => activate(&mut manager, &state, &registry, &mut active, *k),
+                    Some((k, _)) => {
+                        activate(&mut manager, &state, &registry, &mut active, *k, pad_mode)
+                    }
                     None => {
                         active = None;
                         manager.release_held(&state);
@@ -1187,7 +1243,28 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                             sci.rstick_x,
                             sci.rstick_y
                         ));
-                        activate(&mut manager, &state, &registry, &mut active, kind);
+                        activate(&mut manager, &state, &registry, &mut active, kind, pad_mode);
+                        // The activating frame itself is dropped by this
+                        // match — honor a STEAM held in it, so the very first
+                        // press after startup toggles instead of just
+                        // activating the device.
+                        if sci.buttons & btn::STEAM != 0 {
+                            pad_mode = !pad_mode;
+                            enter_mode(
+                                pad_mode,
+                                &mut manager,
+                                &state,
+                                &pad,
+                                registry
+                                    .iter()
+                                    .find(|(k, _)| *k == kind)
+                                    .map(|(_, r)| &r.dev),
+                            );
+                            diag::log(&format!(
+                                "mode: {} (STEAM)",
+                                if pad_mode { "gamepad" } else { "keyboard" }
+                            ));
+                        }
                     }
                 }
                 Some(a) if a == kind => {
@@ -1220,9 +1297,31 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                                 }
                             ));
                         }
+                        // STEAM rising edge = mode toggle (keyboard <-> gamepad).
+                        // Detected from the RAW mask before prev_buttons is updated.
+                        let steam_edge =
+                            (sci.buttons & btn::STEAM != 0) && (r.prev_buttons & btn::STEAM == 0);
                         r.prev_buttons = sci.buttons;
                         let dev = r.dev.clone();
-                        manager.handle_input(&state, &dev, &sci);
+                        if steam_edge {
+                            pad_mode = !pad_mode;
+                            enter_mode(pad_mode, &mut manager, &state, &pad, Some(&dev));
+                            diag::log(&format!(
+                                "mode: {} (STEAM)",
+                                if pad_mode { "gamepad" } else { "keyboard" }
+                            ));
+                        }
+                        // STEAM is the mode toggle — never a key, pad button
+                        // (BTN_MODE) or chord modifier downstream.
+                        let mut frame = sci;
+                        frame.buttons &= !btn::STEAM;
+                        if pad_mode {
+                            if let Some(p) = &pad {
+                                p.emit_sci(&frame, kind == Kind::Classic);
+                            }
+                        } else {
+                            manager.handle_input(&state, &dev, &frame);
+                        }
                     }
                 }
                 Some(a) => {
@@ -1235,7 +1334,7 @@ pub fn input_thread(state: Arc<OskState>, stop: Arc<crate::stop::StopFlag>) {
                         .map(|(_, r)| r.last_active.elapsed() > SWITCH_IDLE)
                         .unwrap_or(true);
                     if frame_has_activity(&sci) && active_idle {
-                        activate(&mut manager, &state, &registry, &mut active, kind);
+                        activate(&mut manager, &state, &registry, &mut active, kind, pad_mode);
                     }
                 }
             }

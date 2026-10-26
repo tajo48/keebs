@@ -1,14 +1,15 @@
 //! keebs — Rust port of the SteamlessKeyboard Linux app.
 //!
-//! Default: the on-screen keyboard (phase 2) — SDL3 window + controller
-//! chords (Steam+X opens, B/LGRIP closes, Steam-alone closes, L2=Shift,
-//! R2=Enter, pads/sticks navigate, right stick = mouse).
+//! Default: DUAL MODE — the controller feeds a virtual Xbox 360 gamepad
+//! (games/Steam see a standard pad); pressing the STEAM button toggles to
+//! keyboard mode (OSK opens, controller drives it: R5 opens/closes, B
+//! closes, L2=Shift... via paddles), pressing STEAM again returns to gamepad
+//! mode. STEAM itself is never forwarded (no guide button, no Steam-chords).
 //!
 //! `--listener`: phase-1 passive device listener (prints button edges and
 //! battery, LGRIP1/L4 -> Left Shift via uinput).
 //! `--probe-sc`: guided calibration for the classic (2015) Steam Controller.
-//! `--pad`: virtual Xbox 360 gamepad — real controllers hidden from the
-//! desktop, everything forwarded into one standard pad (Steam-safe mode).
+//! `--pad`: gamepad mode ONLY — no OSK, no toggle.
 
 use std::sync::Arc;
 use std::time::Duration;
