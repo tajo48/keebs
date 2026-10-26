@@ -359,7 +359,10 @@ pub const DECK_STICK_Y_SIGN: i32 = -1;
 /// Byte 13 mixes REAL paddle bits (1=L4, 2=R4) with counter bits — only the
 /// mapped bits are read.
 const DECK_BUTTON_BYTES: [(usize, [u32; 8]); 2] = [
-    // byte 8: RT LT RB LB Y B X A
+    // byte 8: RT LT RB LB X A Y B — the face-button PAIRS were calibrated
+    // crossed: physical A fired the B mask and vice versa, X fired Y and
+    // vice versa (hardware-verified in-game 2026-10-26). Table fixed, not
+    // swapped in the virtual pad, so keyboard-mode keys stay consistent.
     (
         8,
         [
@@ -367,10 +370,10 @@ const DECK_BUTTON_BYTES: [(usize, [u32; 8]); 2] = [
             buttons::LT,
             buttons::RB,
             buttons::LB,
-            buttons::Y,
-            buttons::B,
             buttons::X,
             buttons::A,
+            buttons::Y,
+            buttons::B,
         ],
     ),
     // byte 9: DUP DRIGHT DLEFT DDOWN VIEW STEAM MENU, bit7 = L5
