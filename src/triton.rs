@@ -609,14 +609,7 @@ impl SteamController {
             }
 
             if let Some(mut sci) = parse_triton(&buf[..n]) {
-                sci.lstick_x -= centers[0];
-                sci.lstick_y -= centers[1];
-                sci.rstick_x -= centers[2];
-                sci.rstick_y -= centers[3];
-                // Triggers only pull one way: clamp the rest-corrected value
-                // at zero so a negative rest offset can't read as "pulled".
-                sci.ltrig = (sci.ltrig - centers[4]).max(0);
-                sci.rtrig = (sci.rtrig - centers[5]).max(0);
+                apply_centers(&mut sci, centers);
                 self.note_frame(None);
                 cb(self, &sci);
             }

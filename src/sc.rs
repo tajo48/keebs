@@ -18,16 +18,21 @@ pub const SC_STATUS_INPUT: u16 = 0x42;
 
 // ---------------------------------------------------------------------------
 // Button bit assignments (Triton layout, from SDL's TritonButtons enum).
+// Hardware-calibrated against a live Triton 2026 (2026-11-08): X/Y and
+// START/VIEW wire bits are pairwise swapped relative to the SDL enum —
+// physical X reports 0x0008, physical Y 0x0004; physical START (menu)
+// reports 0x0040, physical VIEW 0x4000. Keep the semantic names — Deck and
+// classic map INTO these masks by name, only Triton wires bits through raw.
 // ---------------------------------------------------------------------------
 
 pub mod buttons {
     pub const A: u32 = 0x0000_0001;
     pub const B: u32 = 0x0000_0002;
-    pub const X: u32 = 0x0000_0004;
-    pub const Y: u32 = 0x0000_0008;
+    pub const X: u32 = 0x0000_0008;
+    pub const Y: u32 = 0x0000_0004;
     pub const QAM: u32 = 0x0000_0010;
     pub const R3: u32 = 0x0000_0020;
-    pub const VIEW: u32 = 0x0000_0040;
+    pub const VIEW: u32 = 0x0000_4000;
     pub const RGRIP1: u32 = 0x0000_0080; // right back paddle (Triton R4)
     pub const RGRIP2: u32 = 0x0000_0100; // right back paddle (Triton R5)
     pub const RB: u32 = 0x0000_0200;
@@ -35,7 +40,7 @@ pub mod buttons {
     pub const DPAD_RIGHT: u32 = 0x0000_0800;
     pub const DPAD_LEFT: u32 = 0x0000_1000;
     pub const DPAD_UP: u32 = 0x0000_2000;
-    pub const START: u32 = 0x0000_4000; // menu
+    pub const START: u32 = 0x0000_0040; // menu
     pub const L3: u32 = 0x0000_8000;
     pub const STEAM: u32 = 0x0001_0000;
     pub const LGRIP1: u32 = 0x0002_0000; // left back paddle (Triton L4)
@@ -143,6 +148,10 @@ pub const SCI_NULL: SciInput = SciInput {
 /// accept either (mirrors SDL's IsStateReportId).
 pub const TRITON_INPUT_REPORT_IDS: [u8; 2] = [0x45, 0x42];
 pub const TRITON_INPUT_MIN_LEN: usize = 30;
+/// Stick Y runs OPPOSITE to gamepad expectation (raw up = negative), same
+/// quirk as the Deck's `DECK_STICK_Y_SIGN` — but Triton's parse had no flip,
+/// so up/down were swapped in-game. Hardware-verified 2026-11-08.
+pub const TRITON_STICK_Y_SIGN: i32 = -1;
 
 pub const TRITON_BATTERY_REPORT_ID: u8 = 0x43;
 /// report[1] charge-state values.
@@ -323,6 +332,11 @@ pub fn parse_triton(data: &[u8]) -> Option<SciInput> {
         return None;
     }
     let g = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]);
+    // Stick Y sign flip happens in i32 (same overflow rule as `sat`).
+    let gy = |o: usize| {
+        (i32::from(i16::from_le_bytes([data[o], data[o + 1]])) * TRITON_STICK_Y_SIGN)
+            .clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    };
     Some(SciInput {
         status: SC_STATUS_INPUT,
         seq: data[1],
@@ -330,15 +344,32 @@ pub fn parse_triton(data: &[u8]) -> Option<SciInput> {
         ltrig: g(6),
         rtrig: g(8),
         lstick_x: g(10),
-        lstick_y: g(12),
+        lstick_y: gy(12),
         rstick_x: g(14),
-        rstick_y: g(16),
+        rstick_y: gy(16),
         lpad_x: g(18),
         lpad_y: g(20),
         rpad_x: g(24),
         rpad_y: g(26),
         ..SCI_NULL
     })
+}
+
+/// Rest-center a parsed Triton frame: subtract the averaged rest offsets
+/// and clamp into i16. The subtraction MUST happen in i32 — raw i16 math
+/// underflows whenever a stick extreme meets a nonzero center estimate
+/// (`i16::MIN - positive`), which panics the reader thread in debug builds
+/// and silently wraps in release (same contract as `parse_deck`'s `sat`).
+/// Triggers additionally clamp at zero so a negative rest offset can't
+/// read as "pulled".
+pub fn apply_centers(sci: &mut SciInput, centers: [i16; 6]) {
+    let sat = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    sci.lstick_x = sat(i32::from(sci.lstick_x) - i32::from(centers[0]));
+    sci.lstick_y = sat(i32::from(sci.lstick_y) - i32::from(centers[1]));
+    sci.rstick_x = sat(i32::from(sci.rstick_x) - i32::from(centers[2]));
+    sci.rstick_y = sat(i32::from(sci.rstick_y) - i32::from(centers[3]));
+    sci.ltrig = sat(i32::from(sci.ltrig) - i32::from(centers[4])).max(0);
+    sci.rtrig = sat(i32::from(sci.rtrig) - i32::from(centers[5])).max(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +709,75 @@ mod tests {
         let mut f = [0u8; 64];
         f[0] = CLASSIC_INPUT_STATUS;
         assert!(parse_classic(&f[..32]).is_none()); // too short
+    }
+
+    /// Triton rest-centering must saturate, never overflow: a stick extreme
+    /// meeting a nonzero center estimate (`i16::MIN - positive` or
+    /// `0 - i16::MIN`) panicked the reader thread in debug builds (observed:
+    /// "attempt to subtract with overflow" at the triton call site — reader
+    /// dies, lizard flips back on, mouse goes dead until re-handover).
+    /// Triton stick Y is hardware-inverted (raw up = negative, like the
+    /// Deck) and must be flipped to the house convention (up = positive,
+    /// same post-flip sign `parse_deck` produces). Regression: the flip was
+    /// missing, so up/down ran swapped in-game on the SC 2026.
+    #[test]
+    fn parse_triton_flips_stick_y() {
+        let put = |f: &mut [u8; 32], o: usize, v: i16| {
+            f[o] = v as u8;
+            f[o + 1] = (v >> 8) as u8;
+        };
+        let frame = |lx: i16, ly: i16, rx: i16, ry: i16| {
+            let mut f = [0u8; 32];
+            f[0] = 0x45;
+            put(&mut f, 10, lx);
+            put(&mut f, 12, ly);
+            put(&mut f, 14, rx);
+            put(&mut f, 16, ry);
+            f
+        };
+        // Up = raw negative must read positive (raw MIN saturates at MAX);
+        // down = raw positive reads negative.
+        let s = parse_triton(&frame(0, i16::MIN, 0, i16::MAX)).unwrap();
+        assert_eq!(s.lstick_y, i16::MAX);
+        assert_eq!(s.rstick_y, -i16::MAX);
+        // X stays untouched.
+        let s = parse_triton(&frame(i16::MAX, 0, i16::MIN, 0)).unwrap();
+        assert_eq!(s.lstick_x, i16::MAX);
+        assert_eq!(s.rstick_x, i16::MIN);
+    }
+
+    #[test]
+    fn apply_centers_saturates() {
+        let mut s = SciInput {
+            lstick_x: i16::MIN,
+            lstick_y: i16::MAX,
+            rstick_x: i16::MAX,
+            rstick_y: i16::MIN,
+            ltrig: 0,
+            rtrig: i16::MAX,
+            ..SCI_NULL
+        };
+        apply_centers(&mut s, [100, -100, -100, 100, 50, i16::MIN]);
+        // Underflow clamps at i16::MIN instead of panicking/wrapping.
+        assert_eq!(s.lstick_x, i16::MIN);
+        // Overflow clamps at i16::MAX instead of inverting the axis.
+        assert_eq!(s.lstick_y, i16::MAX);
+        assert_eq!(s.rstick_x, i16::MAX);
+        assert_eq!(s.rstick_y, i16::MIN);
+        // Trigger: 0 - positive center clamps to "not pulled".
+        assert_eq!(s.ltrig, 0);
+        // Trigger: 0 - i16::MIN (overflow past i16::MAX) clamps, stays pulled.
+        assert_eq!(s.rtrig, i16::MAX);
+
+        // Plain in-range correction still lands exactly.
+        let mut s = SciInput {
+            lstick_x: 1000,
+            rtrig: 2000,
+            ..SCI_NULL
+        };
+        apply_centers(&mut s, [10, 0, 0, 0, -8, 200]);
+        assert_eq!(s.lstick_x, 990);
+        assert_eq!(s.rtrig, 1800);
     }
 
     /// Deck sticks are SIGNED 16-bit with rest ≈ 0. Regression guards:
