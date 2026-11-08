@@ -38,9 +38,16 @@ pub const SDL_INIT_EVENTS: u32 = 0x0000_4000;
 
 pub const SDL_WINDOW_HIDDEN: u64 = 0x0000_0000_0000_0008;
 pub const SDL_WINDOW_BORDERLESS: u64 = 0x0000_0000_0000_0010;
+pub const SDL_WINDOW_HIGH_PIXEL_DENSITY: u64 = 0x0000_0000_0000_2000;
 pub const SDL_WINDOW_TRANSPARENT: u64 = 0x0000_0000_4000_0000;
 
 pub const SDL_WINDOWPOS_CENTERED: i32 = 0x2FFF_0000;
+
+/// SDL_PROP_DISPLAY_WAYLAND_OUTPUT_NAME_STRING — the compositor-side output
+/// name (e.g. "DP-1" on niri), so env vars can key per-monitor settings the
+/// same way the niri config does. Missing on backends without the property
+/// (then SDL_GetDisplayName is the fallback).
+pub const SDL_PROP_DISPLAY_WAYLAND_OUTPUT_NAME: &[u8] = b"SDL.display.wayland.output_name\0";
 
 pub const SDL_BLENDMODE_BLEND: u32 = 0x0000_0001;
 
@@ -200,19 +207,25 @@ impl Default for SDL_Event {
 type FnBool1u32 = unsafe extern "C" fn(u32) -> bool;
 type FnVoid1u32 = unsafe extern "C" fn(u32);
 type FnBool2CharPtr = unsafe extern "C" fn(*const c_char, *const c_char) -> bool;
+type FnU32Props = unsafe extern "C" fn(u32) -> u32;
+type FnU32CharPtr = unsafe extern "C" fn(u32) -> *const c_char;
 type FnBool3CharPtr = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> bool;
 type FnCharPtr = unsafe extern "C" fn() -> *const c_char;
 type FnU32 = unsafe extern "C" fn() -> u32;
 type FnBoolU32Rect = unsafe extern "C" fn(u32, *mut SDL_Rect) -> bool;
 type FnWindow = unsafe extern "C" fn(*const c_char, c_int, c_int, u64) -> SdlWindow;
 type FnVoidPtr = unsafe extern "C" fn(SdlWindow);
+type FnWindowF32 = unsafe extern "C" fn(SdlWindow) -> f32;
+type FnWindowU32 = unsafe extern "C" fn(SdlWindow) -> u32;
 type FnBoolWin2i = unsafe extern "C" fn(SdlWindow, c_int, c_int) -> bool;
+type FnBoolWinOut2i = unsafe extern "C" fn(SdlWindow, *mut c_int, *mut c_int) -> bool;
 type FnBoolWinBool = unsafe extern "C" fn(SdlWindow, bool) -> bool;
 type FnRenderer = unsafe extern "C" fn(SdlWindow, *const c_char) -> SdlRenderer;
 type FnVoidRenderer = unsafe extern "C" fn(SdlRenderer);
 type FnBoolR4u8 = unsafe extern "C" fn(SdlRenderer, u8, u8, u8, u8) -> bool;
 type FnBoolRU32 = unsafe extern "C" fn(SdlRenderer, u32) -> bool;
 type FnBoolR = unsafe extern "C" fn(SdlRenderer) -> bool;
+type FnBoolR2f = unsafe extern "C" fn(SdlRenderer, f32, f32) -> bool;
 type FnBoolRFRect = unsafe extern "C" fn(SdlRenderer, *const SDL_FRect) -> bool;
 type FnBoolRTex =
     unsafe extern "C" fn(SdlRenderer, SdlTexture, *const SDL_FRect, *const SDL_FRect) -> bool;
@@ -252,6 +265,12 @@ pub struct Sdl {
     pub create_window: FnWindow,
     pub destroy_window: FnVoidPtr,
     pub set_window_position: FnBoolWin2i,
+    pub set_window_size: FnBoolWin2i,
+    pub get_window_size_in_pixels: FnBoolWinOut2i,
+    pub get_window_display_scale: FnWindowF32,
+    pub get_display_for_window: FnWindowU32,
+    pub get_display_properties: FnU32Props,
+    pub get_display_name: FnU32CharPtr,
     pub set_window_always_on_top: FnBoolWinBool,
     pub set_window_focusable: FnBoolWinBool,
     pub show_window: FnVoidPtr,
@@ -261,6 +280,7 @@ pub struct Sdl {
     pub destroy_renderer: FnVoidRenderer,
     pub set_render_draw_color: FnBoolR4u8,
     pub set_render_draw_blend_mode: FnBoolRU32,
+    pub set_render_scale: FnBoolR2f,
     pub render_clear: FnBoolR,
     pub render_fill_rect: FnBoolRFRect,
     pub render_texture: FnBoolRTex,
@@ -316,6 +336,12 @@ impl Sdl {
                 create_window: bind(&core, b"SDL_CreateWindow\0"),
                 destroy_window: bind(&core, b"SDL_DestroyWindow\0"),
                 set_window_position: bind(&core, b"SDL_SetWindowPosition\0"),
+                set_window_size: bind(&core, b"SDL_SetWindowSize\0"),
+                get_window_size_in_pixels: bind(&core, b"SDL_GetWindowSizeInPixels\0"),
+                get_window_display_scale: bind(&core, b"SDL_GetWindowDisplayScale\0"),
+                get_display_for_window: bind(&core, b"SDL_GetDisplayForWindow\0"),
+                get_display_properties: bind(&core, b"SDL_GetDisplayProperties\0"),
+                get_display_name: bind(&core, b"SDL_GetDisplayName\0"),
                 set_window_always_on_top: bind(&core, b"SDL_SetWindowAlwaysOnTop\0"),
                 set_window_focusable: bind(&core, b"SDL_SetWindowFocusable\0"),
                 show_window: bind(&core, b"SDL_ShowWindow\0"),
@@ -325,6 +351,7 @@ impl Sdl {
                 destroy_renderer: bind(&core, b"SDL_DestroyRenderer\0"),
                 set_render_draw_color: bind(&core, b"SDL_SetRenderDrawColor\0"),
                 set_render_draw_blend_mode: bind(&core, b"SDL_SetRenderDrawBlendMode\0"),
+                set_render_scale: bind(&core, b"SDL_SetRenderScale\0"),
                 render_clear: bind(&core, b"SDL_RenderClear\0"),
                 render_fill_rect: bind(&core, b"SDL_RenderFillRect\0"),
                 render_texture: bind(&core, b"SDL_RenderTexture\0"),

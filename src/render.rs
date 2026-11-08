@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::os::raw::c_int;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -54,6 +55,24 @@ pub struct Screen {
     font_symbol: sdl3::TtfFont,
     font_symbol_small: sdl3::TtfFont,
     font_scale: f32,
+    /// Backbuffer size in pixels — THE layout coordinate system. Everything
+    /// (key grid, labels, dots) draws 1:1 in buffer pixels; SDL mouse events
+    /// arrive in points and are converted via OskState::point_to_px.
+    pixel_w: i32,
+    pixel_h: i32,
+    /// Frozen base (env scale) and the applied per-output size.
+    base_w: f32,
+    base_h: f32,
+    lw: i32,
+    lh: i32,
+    mult: f32,
+    /// Display the window is currently on. At creation the window is hidden
+    /// and SDL reports the primary display — the real one is only known
+    /// after the compositor maps it, so sync_backbuffer re-evaluates the
+    /// per-output mult when this changes.
+    display_id: u32,
+    font_main_path: String,
+    font_sym_path: String,
     /// Fill alpha for bg + keys (text stays opaque).
     alpha: u8,
     /// Texture cache: (font_size, symbol, color, label) -> (tex, w, h).
@@ -126,8 +145,92 @@ fn resolve_fonts() -> (String, String) {
     (main, sym)
 }
 
+/// Which compositor output the window landed on (Wayland output name like
+/// "DP-1" via the display property, falling back to SDL_GetDisplayName) —
+/// lets KEEBS_OSK_MONITOR_MULT entries key monitors the same way the niri
+/// config does. None when the backend exposes neither.
+fn output_name(s: &sdl3::Sdl, window: sdl3::SdlWindow) -> Option<String> {
+    unsafe {
+        let disp = (s.get_display_for_window)(window);
+        if disp == 0 {
+            return None;
+        }
+        let props = (s.get_display_properties)(disp);
+        if props != 0 {
+            let key = CString::new(
+                sdl3::SDL_PROP_DISPLAY_WAYLAND_OUTPUT_NAME
+                    .iter()
+                    .copied()
+                    .take_while(|b| *b != 0)
+                    .collect::<Vec<u8>>(),
+            )
+            .ok()?;
+            let p = (s.get_pointer_property)(props, key.as_ptr(), std::ptr::null_mut());
+            if !p.is_null() {
+                return Some(
+                    std::ffi::CStr::from_ptr(p as *const std::os::raw::c_char)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        let name = (s.get_display_name)(disp);
+        (!name.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned()
+        })
+    }
+}
+
+/// KEEBS_OSK_MONITOR_MULT: either a plain factor ("1.3") applied on every
+/// monitor, or per-output entries keyed by the compositor output name
+/// ("DP-1=1.3,HDMI-1=1.0", separators = comma/semicolon/space). Entries
+/// match the live name exactly OR by prefix — SDL can return the wl_output
+/// description with the model/size appended (niri: "DP-2 27\""), so the
+/// bare connector name from `niri msg outputs` still matches. Anything
+/// invalid or out of 0.25..=3.0 falls back to 1.0 (missing output -> global).
+fn mult_for_output(out_name: &Option<String>) -> f32 {
+    let (global, per) =
+        parse_mult_spec(&std::env::var("KEEBS_OSK_MONITOR_MULT").unwrap_or_default());
+    let valid = |v: f32| (0.25..=3.0).contains(&v);
+    let lookup = |name: &str| {
+        per.iter()
+            .find(|(n, _)| n == name)
+            .or_else(|| {
+                per.iter()
+                    .find(|(n, _)| name.starts_with(n.as_str()) || n.starts_with(name))
+            })
+            .map(|(_, v)| *v)
+    };
+    match out_name.as_deref().and_then(lookup) {
+        Some(v) if valid(v) => v,
+        _ if valid(global) => global,
+        _ => 1.0,
+    }
+}
+
+fn parse_mult_spec(spec: &str) -> (f32, Vec<(String, f32)>) {
+    let mut global = 1.0_f32;
+    let mut per = Vec::new();
+    for part in spec.split([',', ';', ' ']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((name, val)) = part.split_once('=').or_else(|| part.split_once(':')) {
+            if let Ok(v) = val.trim().parse::<f32>() {
+                per.push((name.trim().to_string(), v));
+            }
+        } else if let Ok(v) = part.parse::<f32>() {
+            global = v;
+        }
+    }
+    (global, per)
+}
+
 impl Screen {
-    pub fn new(state: &OskState) -> Self {
+    pub fn new(state: &OskState, base_w: f32, base_h: f32) -> Self {
         let s = sdl();
         unsafe {
             // Never auto-activate when shown: opening the OSK must not steal
@@ -135,16 +238,21 @@ impl Screen {
             let hint = CString::new("SDL_WINDOW_ACTIVATE_WHEN_SHOWN").unwrap();
             (s.set_hint)(hint.as_ptr(), b"0\0".as_ptr() as *const _);
 
-            let w = state.abs_dims().0 as i32;
-            let h = state.abs_dims().1 as i32;
+            // Base size from the frozen config (env scale) — never from
+            // state, whose dims SDL events overwrite and would drift.
+            let (w, h) = (base_w.round() as i32, base_h.round() as i32);
 
             // Pure Wayland: the compositor owns placement, stacking and
             // focus policy — position/topmost requests are not ours to make.
-            // Flags: BORDERLESS | HIDDEN | TRANSPARENT (ARGB buffer so the
-            // fill alpha shows through). No ALWAYS_ON_TOP: Wayland has no
+            // Flags: BORDERLESS | HIDDEN | HIGH_PIXEL_DENSITY | TRANSPARENT
+            // (ARGB buffer so the fill alpha shows through; HD renders the
+            // buffer at the monitor's native resolution so text stays crisp
+            // on scaled outputs). No ALWAYS_ON_TOP: Wayland has no
             // keep-above for regular toplevels (see README).
             let title = CString::new("").unwrap();
-            let base_flags = sdl3::SDL_WINDOW_BORDERLESS | sdl3::SDL_WINDOW_HIDDEN;
+            let base_flags = sdl3::SDL_WINDOW_BORDERLESS
+                | sdl3::SDL_WINDOW_HIDDEN
+                | sdl3::SDL_WINDOW_HIGH_PIXEL_DENSITY;
             // Retry: at session start the compositor connection can still be
             // settling (same race as the uinput retries in osk_main/manager).
             let mut window = std::ptr::null_mut();
@@ -184,6 +292,44 @@ impl Screen {
                     "OPAQUE — ARGB visual unavailable, alpha will not show"
                 }
             ));
+            // Size policy: CONSTANT LOGICAL size on every monitor. Wayland
+            // scales exist precisely so that points have a similar physical
+            // size across outputs (both of the user's monitors land within
+            // ~1% logical PPI), so the base layout — authored in 1x points —
+            // must NOT be rescaled per display. KEEBS_OSK_MONITOR_MULT
+            // biases the size per output on top ("DP-2=1.2").
+            let out_name = output_name(s, window);
+            let mult = mult_for_output(&out_name);
+            let lw = ((w as f32) * mult).round() as i32;
+            let lh = ((h as f32) * mult).round() as i32;
+            if (lw, lh) != (w, h) && !(s.set_window_size)(window, lw, lh) {
+                eprintln!("osk: SDL_SetWindowSize failed: {}", s.get_error_string());
+            }
+            // Backbuffer pixels: with HIGH_PIXEL_DENSITY the buffer matches
+            // the output's native density (logical * output scale). Queried
+            // AFTER the resize; also re-checked every frame in render() —
+            // a hidden window may not know its output yet, and SDL resizes
+            // the buffer when the window maps/remaps, so the very first
+            // frames can legitimately see a change.
+            let (mut pw, mut ph) = (lw, lh);
+            let mut rw: c_int = 0;
+            let mut rh: c_int = 0;
+            if (s.get_window_size_in_pixels)(window, &mut rw, &mut rh) && rw > 0 && rh > 0 {
+                pw = rw;
+                ph = rh;
+            }
+            println!(
+                "osk: output {} — window {lw}x{lh} logical, backbuffer {pw}x{ph} px, mult {mult}",
+                out_name.as_deref().unwrap_or("?")
+            );
+            state
+                .width
+                .store(lw as usize, std::sync::atomic::Ordering::SeqCst);
+            state
+                .height
+                .store(lh as usize, std::sync::atomic::Ordering::SeqCst);
+            state.set_pixel_dims(pw as usize, ph as usize);
+
             // Never give the OSK keyboard focus: injected uinput keys must
             // keep landing in the app behind it. Pointer input still works.
             if !(s.set_window_focusable)(window, false) {
@@ -212,7 +358,7 @@ impl Screen {
             let (font_path, sym_path) = resolve_fonts();
             println!("osk: font `{font_path}`");
 
-            let font_scale = BASE_HEIGHT / 369.0 * (h as f32 / BASE_HEIGHT);
+            let font_scale = ph as f32 / BASE_HEIGHT;
             let open_font = |path: &str, size: f32| -> sdl3::TtfFont {
                 let c = CString::new(path).unwrap();
                 let font = (s.ttf_open_font)(c.as_ptr(), size * font_scale);
@@ -239,6 +385,16 @@ impl Screen {
                 font_symbol,
                 font_symbol_small,
                 font_scale,
+                pixel_w: pw,
+                pixel_h: ph,
+                base_w: base_w,
+                base_h: base_h,
+                lw,
+                lh,
+                mult,
+                display_id: (s.get_display_for_window)(window),
+                font_main_path: font_path,
+                font_sym_path: sym_path,
                 alpha: osk_alpha(),
                 tex_cache: HashMap::new(),
             }
@@ -328,8 +484,85 @@ impl Screen {
         }
     }
 
+    /// Re-open fonts at the current backbuffer height (paths are cached on
+    /// Self — this runs when the buffer size changed after creation).
+    fn reopen_fonts(&mut self) {
+        let s = sdl();
+        self.font_scale = self.pixel_h as f32 / BASE_HEIGHT;
+        unsafe {
+            let open = |path: &str, size: f32, scale: f32| -> sdl3::TtfFont {
+                let c = CString::new(path).unwrap();
+                (s.ttf_open_font)(c.as_ptr(), size * scale)
+            };
+            (s.ttf_close_font)(self.font_main);
+            (s.ttf_close_font)(self.font_small);
+            (s.ttf_close_font)(self.font_shadow);
+            (s.ttf_close_font)(self.font_symbol);
+            (s.ttf_close_font)(self.font_symbol_small);
+            let scale = self.font_scale;
+            self.font_main = open(&self.font_main_path, 26.0, scale);
+            self.font_small = open(&self.font_main_path, 20.0, scale);
+            self.font_shadow = open(&self.font_main_path, 21.0, scale);
+            self.font_symbol = open(&self.font_sym_path, 26.0, scale);
+            self.font_symbol_small = open(&self.font_sym_path, 20.0, scale);
+        }
+        // All cached label textures were rasterized for the old buffer.
+        self.tex_cache.clear();
+    }
+
+    /// Track display + backbuffer changes: at creation the window is hidden
+    /// (SDL reports the PRIMARY display and a 1x buffer — the real output is
+    /// only known after the compositor maps it), so both are re-checked
+    /// every frame. On a display change the per-output mult is recomputed
+    /// and the window resized; on a buffer change the layout dims, fonts and
+    /// texture cache all follow.
+    fn sync_backbuffer(&mut self, state: &OskState, vkb: &mut VirtualKeyboard) {
+        let s = sdl();
+        unsafe {
+            let disp = (s.get_display_for_window)(self.window);
+            if disp != 0 && disp != self.display_id {
+                self.display_id = disp;
+                let out = output_name(s, self.window);
+                let mult = mult_for_output(&out);
+                if mult != self.mult {
+                    self.mult = mult;
+                    self.lw = ((self.base_w) * mult).round() as i32;
+                    self.lh = ((self.base_h) * mult).round() as i32;
+                    (s.set_window_size)(self.window, self.lw, self.lh);
+                    state
+                        .width
+                        .store(self.lw as usize, std::sync::atomic::Ordering::SeqCst);
+                    state
+                        .height
+                        .store(self.lh as usize, std::sync::atomic::Ordering::SeqCst);
+                    diag::log(&format!(
+                        "osk: output now {} — resized to {}x{} (mult {mult})",
+                        out.as_deref().unwrap_or("?"),
+                        self.lw,
+                        self.lh
+                    ));
+                }
+            }
+        }
+        let (mut rw, mut rh) = (0, 0);
+        unsafe {
+            (s.get_window_size_in_pixels)(self.window, &mut rw, &mut rh);
+        }
+        if rw <= 0 || rh <= 0 || (rw == self.pixel_w && rh == self.pixel_h) {
+            return;
+        }
+        self.pixel_w = rw;
+        self.pixel_h = rh;
+        state.set_pixel_dims(rw as usize, rh as usize);
+        let (fw, fh) = state.pixel_dims();
+        vkb.update_dimensions(fw, fh);
+        self.reopen_fonts();
+        diag::log(&format!("osk: backbuffer changed to {rw}x{rh} — relayout"));
+    }
+
     /// Clear to the background and paint every key.
-    pub fn render(&mut self, state: &OskState, vkb: &VirtualKeyboard) {
+    pub fn render(&mut self, state: &OskState, vkb: &mut VirtualKeyboard) {
+        self.sync_backbuffer(state, vkb);
         let s = sdl();
         unsafe {
             (s.set_render_draw_color)(self.renderer, BG.0, BG.1, BG.2, self.alpha);
@@ -352,9 +585,10 @@ impl Screen {
                     continue;
                 }
                 // Pointer coords are stored as fractions of the window; keys
-                // are laid out in pixels — compare in pixel space (this was
-                // the dead-touchpad bug: fracs were compared to px rects).
-                let (px, py) = state.frac_to_abs(ptr.frac);
+                // are laid out in backbuffer pixels — compare in pixel space
+                // (this was the dead-touchpad bug: fracs were compared to px
+                // rects).
+                let (px, py) = state.frac_to_px(ptr.frac);
                 if px >= key.x && py >= key.y && px <= key.x + key.w && py <= key.y + key.h {
                     if ptr.state > input_state {
                         input_state = ptr.state;
@@ -475,13 +709,15 @@ impl Screen {
             if ptr.state == InputState::Inactive {
                 continue;
             }
-            let (cx, cy) = state.frac_to_abs(ptr.frac);
+            let (cx, cy) = state.frac_to_px(ptr.frac);
             let color = if ptr.state == InputState::Click {
                 POINTER_DOT_CLICK
             } else {
                 POINTER_DOT
             };
-            self.fill_circle(cx, cy, 12.0, color, 255);
+            let pts_w = state.abs_dims().0.max(1.0);
+            let dot_r = 12.0 * self.pixel_w as f32 / pts_w;
+            self.fill_circle(cx, cy, dot_r, color, 255);
         }
 
         unsafe {

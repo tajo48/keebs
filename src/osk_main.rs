@@ -86,9 +86,8 @@ pub fn run(stop: Arc<StopFlag>) {
         std::thread::spawn(move || manager::input_thread(st, sp));
     }
 
-    let mut screen = Screen::new(&state);
+    let mut screen: Option<Screen> = None;
     let mut vkb = VirtualKeyboard::new(crate::vkb::default_layout(), w, h);
-    state.set_grid_dims(vkb.keys.iter().map(|r| r.len()).collect());
 
     // /dev/uinput can still lack the session's uaccess ACL when the
     // autostart entry fires right at login — retry instead of exiting.
@@ -145,10 +144,13 @@ pub fn run(stop: Arc<StopFlag>) {
                     break;
                 }
                 if et == sdl3::SDL_EVENT_WINDOW_RESIZED {
+                    // Logical points — only mouse-frac dims. The backbuffer
+                    // layout self-heals per frame in Screen::render, so this
+                    // must NOT feed the keyboard layout (points would poison
+                    // a pixel-space grid on scaled outputs).
                     let (nw, nh) = (ev.window.data1.max(1), ev.window.data2.max(1));
                     state.width.store(nw as usize, Ordering::SeqCst);
                     state.height.store(nh as usize, Ordering::SeqCst);
-                    vkb.update_dimensions(nw as f32, nh as f32);
                     activity = true;
                 } else if et == sdl3::SDL_EVENT_WINDOW_FOCUS_GAINED {
                     // The OSK must NEVER hold keyboard focus (injected uinput
@@ -161,7 +163,10 @@ pub fn run(stop: Arc<StopFlag>) {
                     let mpos = (ev.motion.x as i32, ev.motion.y as i32);
                     if let Some(anchor) = mouse_anchor {
                         if mpos != anchor {
-                            if let Some((r, c)) = vkb.find_key(mpos.0 as f32, mpos.1 as f32) {
+                            // Mouse events are in points; the layout is in
+                            // backbuffer pixels.
+                            let (mx, my) = state.point_to_px(mpos.0 as f32, mpos.1 as f32);
+                            if let Some((r, c)) = vkb.find_key(mx, my) {
                                 state.set_cursor(r, c);
                             }
                             activity = true;
@@ -176,7 +181,8 @@ pub fn run(stop: Arc<StopFlag>) {
                     let btn = ev.button.button;
                     mouse_anchor = Some((ev.button.x as i32, ev.button.y as i32));
                     if btn == sdl3::SDL_BUTTON_LEFT {
-                        if let Some((r, c)) = vkb.find_key(ev.button.x as f32, ev.button.y as f32) {
+                        let (mx, my) = state.point_to_px(ev.button.x as f32, ev.button.y as f32);
+                        if let Some((r, c)) = vkb.find_key(mx, my) {
                             state.set_cursor(r, c);
                             state.set_mouse_press_cell(Some((r, c)));
                             state.queue_key_press(r, c, false);
@@ -211,7 +217,25 @@ pub fn run(stop: Arc<StopFlag>) {
         let cur_visible = state.is_visible();
         if cur_visible != was_visible {
             if cur_visible {
-                screen.show();
+                // Fresh toplevel per open: niri applies window rules only
+                // when a window OPENS (bottom-center floating position!) and
+                // otherwise remembers the last floating position — a recycled
+                // hidden/shown window would respawn mid-air after the active
+                // output or layout changed. Recreation also re-queries the
+                // display scale so the HiDPI buffer matches whatever monitor
+                // the OSK lands on this time. Cost per open: window +
+                // renderer + font reload, ~ms, invisible in the show
+                // transition.
+                let sc = Screen::new(&state, w, h);
+                sc.show();
+                screen = Some(sc);
+                // Layout runs in BACKBUFFER pixels (see render.rs) —
+                // Screen::new queried them after the resize and stored them
+                // in state (a hidden window may not know its output yet;
+                // render() self-heals per frame if the buffer changes).
+                let (pw, ph) = state.pixel_dims();
+                vkb.update_dimensions(pw, ph);
+                state.set_grid_dims(vkb.keys.iter().map(|r| r.len()).collect());
                 mouse_anchor = None; // re-prime: opening fires a spurious motion
                 state.refresh_caps();
             } else {
@@ -220,7 +244,9 @@ pub fn run(stop: Arc<StopFlag>) {
                     state: &state,
                 }
                 .release_shift();
-                screen.hide();
+                // Drop destroys the window + renderer; niri forgets the
+                // toplevel and its stale position goes with it.
+                screen = None;
                 mouse_repeat_at = None;
             }
             was_visible = cur_visible;
@@ -301,7 +327,9 @@ pub fn run(stop: Arc<StopFlag>) {
             // never queueing when hidden is not enforced, so drain here too.
             state.drain_click_queue();
 
-            screen.render(&state, &vkb);
+            if let Some(sc) = screen.as_mut() {
+                sc.render(&state, &mut vkb);
+            }
         } else {
             // Drain queues while hidden so they don't pile up.
             state.drain_key_press_queue();

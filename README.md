@@ -79,7 +79,8 @@ whenever Enter is sent, so Enter never arrives as Shift/Ctrl/Alt/Win+Enter.
 |---|---|---|
 | `KEEBS_PAD_GAIN` | `1.1` | pad→pointer gain — raise if the pads don't reach the window edges, lower if they feel twitchy (coordinates are clamped to the window, so overshoot is safe) |
 | `KEEBS_SC_TICK` | `550,-6,5,18` | SC 2026 UI tick (cursor moves): `freq,gain,count,ms` (gain −127..127, higher = louder) |
-| `KEEBS_OSK_SCALE` | `0.8` | OSK window scale (1.0 = original 1286×369; fonts/layout scale with it) |
+| `KEEBS_OSK_SCALE` | `0.8` | OSK window size in logical points, identical on every monitor (1.0 = original 1286×369; fonts/layout scale with it). Rendered at each monitor's native pixel density, so the perceived size tracks your per-output Wayland scales |
+| `KEEBS_OSK_MONITOR_MULT` | `1.0` | Size multiplier on top (0.25..3.0): a plain factor ("1.3") or per-output entries keyed by the compositor output name ("DP-2=1.2,HDMI-A-1=1.0") — raise only the monitor that should sit bigger |
 | `KEEBS_OSK_ALPHA` | `0.5` | OSK transparency for background + key fills (0.10..1.0; labels stay opaque). Native on Wayland (ARGB window) |
 
 Example: `KEEBS_PAD_GAIN=3 KEEBS_SC_TICK=800,-3,3,12 nix run .#keebs`

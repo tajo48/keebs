@@ -190,6 +190,41 @@ fn listener(stop: Arc<StopFlag>) {
     println!("bye");
 }
 
+/// Single instance: hold an exclusive flock on $XDG_RUNTIME_DIR/keebs.lock
+/// for the process lifetime. The kernel releases the lock even on crash,
+/// so a stale file never blocks the next launch (a create_new marker file
+/// would). Without the guard, a manual `nix run` next to the autostart
+/// instance means two keebs processes: two OSK windows stacked mid-air and
+/// two readers fighting over the same controllers.
+fn claim_single_instance() {
+    use std::os::fd::AsRawFd;
+    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let path = format!("{dir}/keebs.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path);
+    let Ok(file) = file else {
+        eprintln!(
+            "warning: could not open {path} — no single-instance guard ({})",
+            file.unwrap_err()
+        );
+        return;
+    };
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret != 0 {
+        let msg = "keebs: another instance is already running — exiting";
+        println!("{msg}");
+        keebs::diag::log(msg);
+        std::process::exit(0);
+    }
+    // Park the file in a static so the fd (and thus the flock) lives as
+    // long as the process.
+    static LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    let _ = LOCK.set(file);
+}
+
 fn main() {
     // GNOME autostart hands the app startup-notification / xdg-activation
     // tokens (DESKTOP_STARTUP_ID / XDG_ACTIVATION_TOKEN, plus
@@ -227,6 +262,10 @@ fn main() {
         classic::probe();
         return;
     }
+
+    // Every hardware/window-owning mode is single-instance; the --probe-sc
+    // calibration probe above stays unguarded (runnable alongside).
+    claim_single_instance();
 
     if pad_mode {
         println!("keebs — virtual gamepad mode");

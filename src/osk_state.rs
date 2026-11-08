@@ -63,8 +63,14 @@ pub struct ClickEvent {
 pub struct OskState {
     pub visible: AtomicBool,
     pub close_app: AtomicBool,
+    /// Window size in LOGICAL POINTS (SDL mouse-event coordinates) — only
+    /// used for mouse <-> fraction conversion. NOT for layout.
     pub width: AtomicUsize,
     pub height: AtomicUsize,
+    /// Backbuffer size in PIXELS — the coordinate system the keyboard is
+    /// laid out and rendered in (native resolution via HIGH_PIXEL_DENSITY).
+    pub pixel_width: AtomicUsize,
+    pub pixel_height: AtomicUsize,
 
     cursor: Mutex<(usize, usize)>,
     grid_dims: Mutex<Vec<usize>>,
@@ -100,6 +106,8 @@ impl OskState {
             close_app: AtomicBool::new(false),
             width: AtomicUsize::new(1286),
             height: AtomicUsize::new(369),
+            pixel_width: AtomicUsize::new(1286),
+            pixel_height: AtomicUsize::new(369),
             cursor: Mutex::new((2, 1)),
             grid_dims: Mutex::new(Vec::new()),
             shift_held: AtomicBool::new(false),
@@ -321,6 +329,31 @@ impl OskState {
             self.width.load(Ordering::SeqCst) as f32,
             self.height.load(Ordering::SeqCst) as f32,
         )
+    }
+
+    /// Backbuffer size in pixels (layout/render coordinate system).
+    pub fn pixel_dims(&self) -> (f32, f32) {
+        (
+            self.pixel_width.load(Ordering::SeqCst) as f32,
+            self.pixel_height.load(Ordering::SeqCst) as f32,
+        )
+    }
+
+    pub fn set_pixel_dims(&self, w: usize, h: usize) {
+        self.pixel_width.store(w, Ordering::SeqCst);
+        self.pixel_height.store(h, Ordering::SeqCst);
+    }
+
+    /// Layout coords from a fractional pointer position (buffer pixels).
+    pub fn frac_to_px(&self, frac: (f32, f32)) -> (f32, f32) {
+        let (w, h) = self.pixel_dims();
+        (frac.0 * w, frac.1 * h)
+    }
+
+    /// Mouse-event coords (points) -> layout coords (buffer pixels).
+    pub fn point_to_px(&self, x: f32, y: f32) -> (f32, f32) {
+        let frac = self.abs_to_frac(x, y);
+        self.frac_to_px(frac)
     }
 
     /// Absolute pixel coords from a fractional pointer position.
